@@ -34,4 +34,6 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           JOB_ID: ${{ github.event.client_payload.job_id }}
           SEGMENT_COUNT: ${{ github.event.client_payload.segment_count }}
+          MINIMAX_TASKS_JSON: ${{ github.event.client_payload.minimax_tasks }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
         run: node script.js

@@ -9,20 +9,24 @@
 //   6. Trigger stitcher service to concat videos, mix audio, speed-adjust
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { HfInference } from 'https://esm.sh/@huggingface/inference';
 
 const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// ── Config ──
+const OPENROUTER_API_KEY = Deno.env.get('OPENROUTER_API_KEY')!;
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const OPENROUTER_API_KEY = Deno.env.get('OPENROUTER_API_KEY')!;
 const FISH_AUDIO_API_KEY = Deno.env.get('FISH_AUDIO_API_KEY') || '';
 const BYTEZ_API_KEY = Deno.env.get('BYTEZ_API_KEY') || '';
+const HF_TOKEN = Deno.env.get('HF_TOKEN') || ''; // Must be set in Supabase Secrets
 const GITHUB_REPO = Deno.env.get('GITHUB_REPO') || '';   // e.g., "username/ai_video"
 const GITHUB_TOKEN = Deno.env.get('GITHUB_TOKEN') || ''; // Personal Access Token
+const MINIMAX_API_KEY = Deno.env.get('MINIMAX_API_KEY') || "sk-api-vGMXoH6OWRk1a-yl9obMpsns8L23lhyC7EIl23NseM7Uv8fTA6BGqqBnx_ofWHRohLGmaAHCaxg8iNESnbG0q-K418Ofvelz3j2ocmBBhIMsN_iM_o2zjOQ";
+const MINIMAX_GROUP_ID = "2024897099987956064";
+const MINIMAX_MODEL = "MiniMax-Hailuo-02";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
@@ -43,10 +47,9 @@ async function setError(jobId: string, msg: string) {
 async function generateJsons(jobId: string, script: string, segmentCount: number) {
     await updateJob(jobId, { status: 'generating_jsons', progress: 5 });
 
-    const model = 'google/gemini-2.0-flash-exp:free';
-
-    // Voice JSON
+    const model = 'arcee-ai/trinity-large-preview:free';    // Voice JSON
     const voicePrompt = `You are a professional voiceover script editor.
+
 Convert the RAW text into a clear, natural, spoken script formatted as valid JSON only.
 
 Output format:
@@ -58,11 +61,37 @@ Output format:
 }
 
 Rules:
+
 1) Produce EXACTLY ${segmentCount} paragraphs: voice1 → voice${segmentCount}.
    Each paragraph must be 40–60 words.
-2) Rewrite for speech: conversational, short sentences, natural transitions.
-3) Optimize for text-to-speech: no symbols, no lists, spell out numbers.
-4) Output ONLY valid JSON. No comments. No trailing commas. No text outside JSON. No markdown code fences.
+   Maintain logical and narrative flow.
+
+2) Rewrite for speech:
+   - Use conversational language
+   - Prefer short, clear sentences
+   - Improve rhythm and pacing
+   - Use natural transitions
+   - Remove awkward phrasing
+   - Preserve meaning and key facts
+
+3) Optimize for text-to-speech:
+   - Avoid long or nested sentences
+   - Avoid symbols, lists, and formatting
+   - Avoid uncommon abbreviations
+   - Spell out numbers when helpful
+   - Use punctuation to guide pauses
+
+4) Do NOT include:
+   - Inline performance instructions
+   - Stage directions
+   - Bracketed emotion tags
+   - Markup or metadata
+   - Explanations
+   - Markdown
+   - Extra text
+
+5) Output ONLY valid JSON.
+   No comments. No trailing commas. No text outside JSON.
 
 RAW TEXT:
 ${script}`;
@@ -89,13 +118,31 @@ ${script}`;
     await updateJob(jobId, { progress: 15 });
 
     // Image JSON
-    const imagePrompt = `You are an expert visual designer.
-Given a JSON of ${segmentCount} text paragraphs (voice1 → voice${segmentCount}), generate a NEW JSON with ${segmentCount} image generation prompts.
-Each prompt should describe a key visual frame for the paragraph.
+    const imagePrompt = `You are an expert visual designer and prompt engineer.
 
-Output: valid JSON only, keys "image1" to "image${segmentCount}", values are descriptive image prompts.
-Include: lighting, composition, colors, mood, environment. Keep consistent style across all prompts.
-No explanations, no markdown, no extra text. ONLY valid JSON.
+Your task is: Given a JSON of ${segmentCount} text paragraphs (voice1 → voice${segmentCount}), generate a **new JSON with ${segmentCount} image generation prompts** that correspond to each paragraph. Each prompt should describe a **key visual representative frame** for the paragraph.
+
+Requirements:
+
+1. Output must be **valid JSON only**, keys "image1" to "image${segmentCount}", values are strings. No explanations, markdown, instructions, or extra text.
+2. Each prompt should describe a **single, clear image** representing the paragraph.
+3. Maintain a **consistent visual style** across all prompts:
+   - Color palette (e.g., cinematic, moody, vibrant, pastel)
+   - Character design (age, gender, clothing, expression)
+   - Background style (interior, exterior, lighting, weather)
+4. Include **rich visual details**:
+   - Lighting (soft, harsh, golden hour, neon, shadows)
+   - Composition (foreground, background, perspective)
+   - Objects and environment
+   - Emotions conveyed by scene
+5. The prompt should be concise but descriptive enough to generate a **high-quality, static first frame** for a video.
+6. Do NOT include explanations, instructions, markdown, or extra text.
+
+Example format:
+{
+  "image1": "A young woman standing on a rainy street under neon lights, reflective puddles, cinematic moody palette, detailed skyscraper background, soft rain, contemplative expression, key visual representative frame",
+  "image2": "..."
+}
 
 Input JSON:
 ${rawVoice}`;
@@ -122,13 +169,50 @@ ${rawVoice}`;
     await updateJob(jobId, { progress: 25 });
 
     // Video JSON
-    const videoPrompt = `You are an expert cinematic director.
-Given a JSON of ${segmentCount} image prompts, generate a NEW JSON with ${segmentCount} video generation prompts.
-Each prompt should describe a dynamic 5-second video clip.
+    const videoPrompt = `You are an expert cinematic director and visual prompt engineer.
 
-Output: valid JSON only, keys "video1" to "video${segmentCount}", values are descriptive video prompts.
-Include: camera movement, character motion, environmental details, cinematic shots.
-No explanations, no markdown, no extra text. ONLY valid JSON.
+Your task is: Given a JSON of ${segmentCount} text paragraphs (image1 → image${segmentCount}), generate a **new JSON with ${segmentCount} video generation prompts**, one per paragraph. Each prompt should describe a **20-second dynamic video** corresponding to the paragraph.
+
+Requirements:
+
+1. Output must be **valid JSON only**, keys "video1" to "video${segmentCount}", values are strings. No explanations, markdown, instructions, or extra text.
+2. Each prompt should describe a **multi-shot / multi-action scene** suitable for a 20-second clip.
+3. Maintain a **consistent visual style** across all prompts:
+   - Color palette
+   - Character design
+   - Background environment
+   - Lighting
+4. Include **types of cinematic shots and camera angles** (use creatively):
+   - Eye Level Shot
+   - Low Angle Shot
+   - High Angle Shot
+   - Hip Level Shot
+   - Knee Level Shot
+   - Ground Level Shot
+   - Shoulder Level Shot
+   - Dutch Angle
+   - Bird’s-Eye View
+   - Aerial Shot
+   - Over-the-Shoulder Shot
+   - Tracking Shot
+   - Close-Up
+   - Extreme Close-Up
+5. Include **motion/action cues**:
+   - Camera movement (pan, tilt, dolly, tracking)
+   - Character motion (walking, running, turning, gesturing)
+   - Environmental motion (rain, smoke, fire, explosions)
+6. Include **rich visual details**:
+   - Foreground and background composition
+   - Textures, objects, and props
+   - Emotions conveyed by scene
+7. Each prompt should **flow through multiple micro-scenes** (e.g., opening establishing shot, mid-action close-up, end wide shot) to make the video visually dynamic.
+8. Do NOT include explanations, markdown, instructions, or extra text.
+
+Example format:
+{
+  "video1": "Eye level shot: young woman walks down neon-lit rainy street, camera slowly dollying forward; Close-up: raindrops on her cheek, contemplative expression; Tracking shot: pan to distant skyscrapers, mist rising; Wide shot: entire street, moving cars, neon reflections, cinematic moody palette",
+  "video2": "High angle shot: bustling market, camera tilting down to show interactions; Medium shot: vendor gestures, colorful produce; Close-up: hand exchanging coin; Wide shot: crowd moves through street, cinematic lighting"
+}
 
 Input JSON:
 ${rawImage}`;
@@ -224,8 +308,6 @@ async function generateVoice(jobId: string, voiceJson: string, voiceName: string
                     console.error(`Fish Audio TTS failed for segment ${i + 1}:`, await ttsRes.text());
                 }
             } else {
-                // Fallback: Use free Google TTS via a public endpoint
-                // Store text for later processing
                 console.log(`No Fish Audio key, skipping TTS for segment ${i + 1}`);
             }
         } catch (err) {
@@ -236,7 +318,7 @@ async function generateVoice(jobId: string, voiceJson: string, voiceName: string
     await updateJob(jobId, { progress: 50 });
 }
 
-// ── Step 3: Generate Images via Pollinations.ai (100% free, no API key) ──
+// ── Step 3: Generate Images via HuggingFace (FLUX.1-schnell) ──
 async function generateImages(jobId: string, imageJson: string) {
     await updateJob(jobId, { status: 'generating_images', progress: 50 });
 
@@ -244,20 +326,29 @@ async function generateImages(jobId: string, imageJson: string) {
     const imageKeys = Object.keys(images);
     const outputFolder = `job_${jobId}`;
 
+    // Initialize HuggingFace client
+    const hf = new HfInference(HF_TOKEN || "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");
+
     for (let i = 0; i < imageKeys.length; i++) {
         const prompt = images[imageKeys[i]];
         const progress = 50 + Math.round((i / imageKeys.length) * 20);
         await updateJob(jobId, { progress });
 
         try {
-            // Pollinations.ai — completely free, no API key needed
-            const encodedPrompt = encodeURIComponent(prompt);
-            const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1280&height=720&model=flux&nologo=true`;
+            console.log(`[Job ${jobId}] Generating image ${i + 1} with HF FLUX...`);
 
-            // Fetch the generated image
-            const imgRes = await fetch(imageUrl);
-            if (imgRes.ok) {
-                const imgBuffer = await imgRes.arrayBuffer();
+            // Standard HF Fetch method to bypass provider nscale proxy routing errors
+            const fetchRes = await fetch("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${HF_TOKEN || "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"}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ inputs: prompt }),
+            });
+
+            if (fetchRes.ok) {
+                const imgBuffer = await fetchRes.arrayBuffer();
                 const imgBytes = new Uint8Array(imgBuffer);
 
                 // Upload to Supabase Storage
@@ -267,8 +358,9 @@ async function generateImages(jobId: string, imageJson: string) {
                         contentType: 'image/jpeg',
                         upsert: true,
                     });
+                console.log(`[Job ${jobId}] Image ${i + 1} uploaded successfully.`);
             } else {
-                console.error(`Image gen failed for segment ${i + 1}`);
+                console.error(`Image gen failed for segment ${i + 1}: ${fetchRes.status} -`, await fetchRes.text());
             }
         } catch (err) {
             console.error(`Image generation error for segment ${i + 1}:`, err);
@@ -278,77 +370,68 @@ async function generateImages(jobId: string, imageJson: string) {
     await updateJob(jobId, { progress: 70 });
 }
 
-// ── Step 4: Generate Videos via Bytez API (Wan2.1) ──
-async function generateVideos(jobId: string, videoJson: string, imageJson: string) {
+// ── Step 4: Generate Videos via MiniMax (Hailuo-02) ──
+async function generateVideos(jobId: string, videoJson: string) {
     await updateJob(jobId, { status: 'generating_videos', progress: 70 });
 
     const videos = JSON.parse(videoJson);
     const videoKeys = Object.keys(videos);
     const outputFolder = `job_${jobId}`;
+    const minimaxTasks: string[] = [];
 
     for (let i = 0; i < videoKeys.length; i++) {
         const prompt = videos[videoKeys[i]];
-        const progress = 70 + Math.round((i / videoKeys.length) * 25);
+        const progress = 70 + Math.round((i / videoKeys.length) * 20);
         await updateJob(jobId, { progress });
 
         try {
-            if (BYTEZ_API_KEY) {
-                // Use Bytez API with Wan2.1 for text-to-video
-                const videoRes = await fetch('https://api.bytez.com/models/v2/Wan-AI/Wan2.1-T2V-14B', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Key ${BYTEZ_API_KEY}`,
-                    },
-                    body: JSON.stringify({
-                        prompt: prompt,
-                        // Wan2.1 T2V parameters
-                        num_frames: 81,        // ~5 seconds at 16fps
-                        height: 480,
-                        width: 854,
-                    }),
-                });
+            // First frame public URL for MiniMax
+            const firstFrameUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/images/image_${i + 1}.jpg`;
 
-                if (videoRes.ok) {
-                    const videoData = await videoRes.json();
-                    // The response format depends on the Bytez API
-                    // It may return a URL to the generated video or the video data directly
-                    const videoUrl = videoData.output?.url || videoData.url || videoData.output;
+            console.log(`[Job ${jobId}] Submitting video ${i + 1} to MiniMax...`);
+            const payload = {
+                prompt: prompt.substring(0, 2000),
+                model: MINIMAX_MODEL,
+                duration: 6, // 6 seconds like Colab format
+                resolution: "720P",
+                first_frame_image: firstFrameUrl
+            };
 
-                    if (videoUrl && typeof videoUrl === 'string') {
-                        // Download and upload to Supabase Storage
-                        const dlRes = await fetch(videoUrl);
-                        if (dlRes.ok) {
-                            const vidBuffer = await dlRes.arrayBuffer();
-                            const vidBytes = new Uint8Array(vidBuffer);
-                            await supabase.storage
-                                .from('pipeline_output')
-                                .upload(`${outputFolder}/videos/video_${i + 1}.mp4`, vidBytes, {
-                                    contentType: 'video/mp4',
-                                    upsert: true,
-                                });
-                        }
-                    } else if (videoData.output && typeof videoData.output !== 'string') {
-                        // If the response is binary/base64
-                        console.log(`Video ${i + 1}: Received non-URL response, storing metadata`);
-                    }
+            const vRes = await fetch('https://api.minimax.io/v1/video_generation', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${MINIMAX_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (vRes.ok) {
+                const vData = await vRes.json();
+                if (vData.task_id) {
+                    minimaxTasks.push(vData.task_id);
+                    console.log(`[Job ${jobId}] MiniMax task submitted: ${vData.task_id}`);
                 } else {
-                    const errText = await videoRes.text();
-                    console.error(`Bytez video gen failed for segment ${i + 1}:`, errText);
+                    console.error("No task_id from MiniMax:", vData);
+                    minimaxTasks.push("");
                 }
             } else {
-                console.log(`No Bytez API key, skipping video gen for segment ${i + 1}`);
+                console.error(`MiniMax API failed for segment ${i + 1}:`, await vRes.text());
+                minimaxTasks.push("");
             }
+
         } catch (err) {
             console.error(`Video generation error for segment ${i + 1}:`, err);
+            minimaxTasks.push("");
         }
     }
 
     await updateJob(jobId, { progress: 90 });
+    return minimaxTasks;
 }
 
 // ── Step 5: Trigger Stitcher Service (GitHub Actions) ──
-async function triggerStitcher(jobId: string, segmentCount: number) {
+async function triggerStitcher(jobId: string, segmentCount: number, minimaxTasks: string[]) {
     await updateJob(jobId, { status: 'stitching', progress: 92 });
 
     if (!GITHUB_REPO || !GITHUB_TOKEN) {
@@ -374,7 +457,9 @@ async function triggerStitcher(jobId: string, segmentCount: number) {
                 event_type: 'stitch_video',
                 client_payload: {
                     job_id: jobId,
-                    segment_count: segmentCount
+                    segment_count: segmentCount,
+                    minimax_tasks: JSON.stringify(minimaxTasks),
+                    minimax_api_key: MINIMAX_API_KEY
                 }
             }),
         });
@@ -432,11 +517,11 @@ Deno.serve(async (req: Request) => {
                 // Step 3: Generate Images
                 await generateImages(job_id, imageJson);
 
-                // Step 4: Generate Videos
-                await generateVideos(job_id, videoJson, imageJson);
+                // Step 4: Generate Videos via MiniMax (Async Task Submission)
+                const minimaxTasks = await generateVideos(job_id, videoJson);
 
-                // Step 5: Trigger stitcher to concat + mix audio + speed-adjust
-                await triggerStitcher(job_id, segment_count);
+                // Step 5: Trigger stitcher (it will poll MiniMax tasks and stitch)
+                await triggerStitcher(job_id, segment_count, minimaxTasks);
             } catch (err) {
                 console.error('Pipeline error:', err);
                 await setError(job_id, `Pipeline failed: ${err instanceof Error ? err.message : String(err)}`);

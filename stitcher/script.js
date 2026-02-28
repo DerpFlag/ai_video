@@ -17,6 +17,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const JOB_ID = process.env.JOB_ID;
 const SEGMENT_COUNT = parseInt(process.env.SEGMENT_COUNT || '0');
+const MINIMAX_TASKS_JSON = process.env.MINIMAX_TASKS_JSON;
+const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !JOB_ID || !SEGMENT_COUNT) {
     console.error("Missing required environment variables.");
@@ -74,6 +76,50 @@ async function updateJob(jobId, updates) {
     if (error) console.error('Update job error:', error);
 }
 
+// ── MiniMax Integration ──
+async function pollMinimaxTask(taskId, apiKey) {
+    if (!taskId) return null;
+    const url = `https://api.minimax.io/v1/query/video_generation?task_id=${taskId}`;
+
+    // Poll every 10 seconds for up to 15 minutes (90 attempts)
+    for (let attempts = 0; attempts < 90; attempts++) {
+        try {
+            const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+            if (res.ok) {
+                const json = await res.json();
+                if (json.status === "Success" || json.status === "Finish") {
+                    return json.file_id;
+                } else if (json.status === "Fail" || json.status === "Unknown") {
+                    console.error("MiniMax task failed:", json);
+                    return null;
+                }
+                // Processing... continue polling
+            }
+        } catch (e) {
+            console.error("Poll error:", e.message);
+        }
+        await new Promise(r => setTimeout(r, 10000));
+    }
+    console.error("MiniMax task timed out:", taskId);
+    return null;
+}
+
+async function getMinimaxVideoUrl(fileId, apiKey) {
+    const url = `https://api.minimax.io/v1/files/retrieve?file_id=${fileId}`;
+    try {
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+        if (res.ok) {
+            const json = await res.json();
+            if (json.file && json.file.download_url) {
+                return json.file.download_url;
+            }
+        }
+    } catch (e) {
+        console.error("Retrieve error:", e.message);
+    }
+    return null;
+}
+
 // ── Main Script ──
 async function main() {
     console.log(`🎬 Starting stitcher for Job ID: ${JOB_ID}`);
@@ -86,31 +132,56 @@ async function main() {
         await updateJob(JOB_ID, { status: 'stitching', progress: 96 });
 
         // ── Step 1: Download all segments ──
-        console.log(`[${JOB_ID}] Downloading ${SEGMENT_COUNT} video + audio segments...`);
+        console.log(`[${JOB_ID}] Processing ${SEGMENT_COUNT} video + audio segments...`);
 
         const videoFiles = [];
         const audioFiles = [];
+
+        // Parse MiniMax task IDs passed from Edge Function
+        let minimaxTasks = [];
+        try {
+            if (MINIMAX_TASKS_JSON) minimaxTasks = JSON.parse(MINIMAX_TASKS_JSON);
+        } catch (e) { console.error("Could not parse MINIMAX_TASKS_JSON", e); }
 
         for (let i = 1; i <= SEGMENT_COUNT; i++) {
             const videoPath = path.join(workDir, `video_${i}.mp4`);
             const imagePath = path.join(workDir, `image_${i}.jpg`);
             const audioPath = path.join(workDir, `voice_${i}.mp3`);
 
-            // Need the storage download public URLs
-            const videoUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/videos/video_${i}.mp4`;
             const imageUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/images/image_${i}.jpg`;
             const audioUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/audio/voice_${i}.mp3`;
 
             let hasVideo = false;
-            try {
-                await downloadFile(videoUrl, videoPath);
-                videoFiles.push(videoPath);
-                hasVideo = true;
-            } catch (e) {
-                console.warn(`[${JOB_ID}] Video segment ${i} not found, trying image fallback...`);
+
+            // 1. Try polling MiniMax for actual generated video
+            const taskId = minimaxTasks[i - 1];
+            if (taskId && MINIMAX_API_KEY) {
+                console.log(`[${JOB_ID}] Polling MiniMax task ${taskId} for segment ${i} (this may take 5-10 mins)...`);
+                const fileId = await pollMinimaxTask(taskId, MINIMAX_API_KEY);
+                if (fileId) {
+                    const downloadUrl = await getMinimaxVideoUrl(fileId, MINIMAX_API_KEY);
+                    if (downloadUrl) {
+                        try {
+                            console.log(`[${JOB_ID}] Downloading MiniMax video segment ${i}...`);
+                            await downloadFile(downloadUrl, videoPath);
+
+                            // Optionally cache it to Supabase Storage so the user can see individual segments
+                            try {
+                                const videoBuffer = fs.readFileSync(videoPath);
+                                await supabase.storage.from('pipeline_output').upload(`${outputFolder}/videos/video_${i}.mp4`, videoBuffer, { contentType: 'video/mp4', upsert: true });
+                            } catch (uploadErr) { console.warn("Could not cache individual video to Supabase"); }
+
+                            videoFiles.push(videoPath);
+                            hasVideo = true;
+                        } catch (e) {
+                            console.error(`[${JOB_ID}] Failed to download MiniMax video:`, e.message);
+                        }
+                    }
+                }
             }
 
             if (!hasVideo) {
+                console.warn(`[${JOB_ID}] MiniMax video failed or not generated, generating 5s image fallback clip for segment ${i}...`);
                 try {
                     await downloadFile(imageUrl, imagePath);
                     console.log(`[${JOB_ID}] Converting image ${i} to 5s video slice...`);
