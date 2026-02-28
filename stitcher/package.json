@@ -1,0 +1,15 @@
+{
+    "name": "ai-video-stitcher",
+    "version": "1.0.0",
+    "description": "Cloud video stitching service — concat segments, mix audio, speed-adjust",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js"
+    },
+    "dependencies": {
+        "@supabase/supabase-js": "^2.49.0",
+        "express": "^4.21.0",
+        "fluent-ffmpeg": "^2.1.3",
+        "ffmpeg-static": "^5.2.0"
+    }
+}

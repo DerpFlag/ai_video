@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: ai-video-stitcher
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: SUPABASE_URL
+        value: https://acpxzjrjhvvnwnqzgbxk.supabase.co
+      - key: SUPABASE_SERVICE_KEY
+        sync: false  # Set manually in Render dashboard
