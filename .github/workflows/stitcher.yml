@@ -1,0 +1,37 @@
+name: AI Video Stitcher
+
+# Trigger this workflow via the GitHub API (repository dispatch) from the Supabase Edge Function
+on:
+  repository_dispatch:
+    types: [stitch_video]
+
+jobs:
+  stitch:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: './stitcher/package.json'
+          
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        
+      - name: Install Dependencies
+        working-directory: ./stitcher
+        run: npm ci || npm install
+        
+      - name: Run Stitcher Script
+        working-directory: ./stitcher
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+          SEGMENT_COUNT: ${{ github.event.client_payload.segment_count }}
+        run: node script.js
