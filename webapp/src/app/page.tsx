@@ -61,14 +61,15 @@ export default function Home() {
 
     if (!error && data) {
       setJobs(data as Job[]);
-      // Update selected job if it exists
-      if (selectedJob) {
-        const updated = data.find(j => j.id === selectedJob.id);
-        if (updated) setSelectedJob(updated as Job);
-      }
+      // Update selected job if it exists without stale closures
+      setSelectedJob(prev => {
+        if (!prev) return null;
+        const updated = data.find(j => j.id === prev.id);
+        return updated ? (updated as Job) : prev;
+      });
     }
     setLoading(false);
-  }, [selectedJob]);
+  }, []);
 
   useEffect(() => {
     fetchJobs();

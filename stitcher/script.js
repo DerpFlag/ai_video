@@ -93,17 +93,44 @@ async function main() {
 
         for (let i = 1; i <= SEGMENT_COUNT; i++) {
             const videoPath = path.join(workDir, `video_${i}.mp4`);
+            const imagePath = path.join(workDir, `image_${i}.jpg`);
             const audioPath = path.join(workDir, `voice_${i}.mp3`);
 
             // Need the storage download public URLs
             const videoUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/videos/video_${i}.mp4`;
+            const imageUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/images/image_${i}.jpg`;
             const audioUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/audio/voice_${i}.mp3`;
 
+            let hasVideo = false;
             try {
                 await downloadFile(videoUrl, videoPath);
                 videoFiles.push(videoPath);
+                hasVideo = true;
             } catch (e) {
-                console.warn(`[${JOB_ID}] Video segment ${i} not found, skipping`);
+                console.warn(`[${JOB_ID}] Video segment ${i} not found, trying image fallback...`);
+            }
+
+            if (!hasVideo) {
+                try {
+                    await downloadFile(imageUrl, imagePath);
+                    console.log(`[${JOB_ID}] Converting image ${i} to 5s video slice...`);
+                    await runFfmpeg(
+                        ffmpeg()
+                            .input(imagePath)
+                            .inputOptions(['-loop', '1'])
+                            .outputOptions([
+                                '-c:v', 'libx264',
+                                '-t', '5',
+                                '-pix_fmt', 'yuv420p',
+                                '-vf', 'scale=854:480:force_original_aspect_ratio=increase,crop=854:480',
+                                '-r', '30'
+                            ])
+                            .output(videoPath)
+                    );
+                    videoFiles.push(videoPath);
+                } catch (e) {
+                    console.warn(`[${JOB_ID}] Image segment ${i} not found either!`);
+                }
             }
 
             try {
@@ -115,7 +142,7 @@ async function main() {
         }
 
         if (videoFiles.length === 0) {
-            throw new Error('No video segments found to stitch');
+            throw new Error('No video segments found to stitch (both video and image fallbacks failed)');
         }
 
         // ── Step 2: Concatenate all videos ──
