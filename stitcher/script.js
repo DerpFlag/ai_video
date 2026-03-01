@@ -40,8 +40,19 @@ function downloadFile(url, destPath) {
                 return;
             }
             res.pipe(file);
-            file.on('finish', () => { file.close(); resolve(); });
-            file.on('error', reject);
+            file.on('finish', () => {
+                file.close();
+                // Validate file exists and is not empty
+                if (fs.existsSync(destPath) && fs.statSync(destPath).size > 0) {
+                    resolve();
+                } else {
+                    reject(new Error(`Downloaded file is empty: ${destPath}`));
+                }
+            });
+            file.on('error', (err) => {
+                fs.unlink(destPath, () => { });
+                reject(err);
+            });
         }).on('error', reject);
     });
 }
@@ -88,7 +99,7 @@ async function addLog(jobId, message, type = 'info') {
 async function main() {
     await addLog(JOB_ID, `🎬 Starting cinematic video assembly...`);
 
-    const workDir = path.join('/tmp', `stitch_${JOB_ID}`);
+    const workDir = path.resolve('/tmp', `stitch_${JOB_ID}`);
     try {
         if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
         const outputFolder = `job_${JOB_ID}`;
@@ -100,53 +111,50 @@ async function main() {
         const audioFiles = [];
 
         for (let i = 1; i <= SEGMENT_COUNT; i++) {
-            const videoPath = path.join(workDir, `video_${i}.mp4`);
-            const imagePath = path.join(workDir, `image_${i}.jpg`);
-            const audioPath = path.join(workDir, `voice_${i}.mp3`);
+            const videoPath = path.resolve(workDir, `video_${i}.mp4`);
+            const imagePath = path.resolve(workDir, `image_${i}.jpg`);
+            const audioPath = path.resolve(workDir, `voice_${i}.mp3`);
 
             const imageUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/images/image_${i}.jpg`;
             const audioUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/audio/voice_${i}.mp3`;
 
             // 1. Download audio and get duration
             try {
-                await addLog(JOB_ID, `Processing segment ${i}: Downloading assets...`);
                 await downloadFile(audioUrl, audioPath);
                 audioFiles.push(audioPath);
             } catch (e) {
-                await addLog(JOB_ID, `Audio segment ${i} missing, using default duration.`, 'warning');
+                await addLog(JOB_ID, `Missing audio for segment ${i}, using default 6s.`, 'warning');
             }
 
-            let duration = 6; // Default
+            let duration = 6;
             if (fs.existsSync(audioPath)) {
                 duration = await getDuration(audioPath);
             }
 
-            // 2. Generate Ken Burns video from image
+            // 2. Generate Ken Burns video
             try {
-                console.log(`[${JOB_ID}] Downloading image segment ${i}...`);
+                await addLog(JOB_ID, `Processing segment ${i}: Downloading assets...`);
                 await downloadFile(imageUrl, imagePath);
 
-                // Randomized Motion Style
                 const motions = ['zoom_in', 'zoom_out', 'pan_right', 'pan_left'];
-                const style = motions[(i - 1) % motions.length]; // cycle through motions for variety
-
+                const style = motions[(i - 1) % motions.length];
                 const fps = 30;
-                const totalFrames = Math.max(Math.ceil(duration * fps), 1);
-                let filter = '';
+                const totalFrames = Math.max(Math.ceil(duration * fps), 2);
 
-                // Note: zoompan requires careful expressions. 'n' is frame number.
-                // We use 1280x720 as standard.
+                // Fixed scaling to ensure zoompan stability
+                let filter = `scale=2560:-2,crop=1920:1080,`;
+
                 if (style === 'zoom_in') {
-                    filter = `scale=1920:-1,zoompan=z='min(zoom+0.0015,1.5)':d=${totalFrames}:s=1280x720:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+                    filter += `zoompan=z='min(zoom+0.0015,1.5)':d=${totalFrames}:s=1280x720:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
                 } else if (style === 'zoom_out') {
-                    filter = `scale=1920:-1,zoompan=z='if(lte(zoom,1.0),1.5,zoom-0.0015)':d=${totalFrames}:s=1280x720:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+                    filter += `zoompan=z='if(lte(zoom,1.0),1.5,zoom-0.0015)':d=${totalFrames}:s=1280x720:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
                 } else if (style === 'pan_right') {
-                    filter = `scale=1920:-1,zoompan=z=1.3:d=${totalFrames}:s=1280x720:x='((iw-(iw/zoom))/d)*n':y='(ih-(ih/zoom))/2'`;
+                    filter += `zoompan=z=1.3:d=${totalFrames}:s=1280x720:x='((iw-(iw/zoom))/${totalFrames})*n':y='(ih-(ih/zoom))/2'`;
                 } else {
-                    filter = `scale=1920:-1,zoompan=z=1.3:d=${totalFrames}:s=1280x720:x='(iw-(iw/zoom))-((iw-(iw/zoom))/d)*n':y='(ih-(ih/zoom))/2'`;
+                    filter += `zoompan=z=1.3:d=${totalFrames}:s=1280x720:x='(iw-(iw/zoom))-((iw-(iw/zoom))/${totalFrames})*n':y='(ih-(ih/zoom))/2'`;
                 }
 
-                await addLog(JOB_ID, `Encoding segment ${i} (${duration.toFixed(1)}s) with ${style} style...`);
+                await addLog(JOB_ID, `Encoding segment ${i} (${duration.toFixed(1)}s) with ${style}...`);
                 await runFfmpeg(
                     ffmpeg()
                         .input(imagePath)
@@ -160,64 +168,59 @@ async function main() {
                         ])
                         .output(videoPath)
                 );
-                videoFiles.push(videoPath);
+
+                if (fs.existsSync(videoPath) && fs.statSync(videoPath).size > 0) {
+                    videoFiles.push(videoPath);
+                } else {
+                    throw new Error(`Visual segment ${i} encode failed (empty output).`);
+                }
+
                 await updateJob(JOB_ID, { progress: Math.min(75 + Math.floor((i / SEGMENT_COUNT) * 15), 90) });
             } catch (e) {
-                await addLog(JOB_ID, `Segment ${i} visual failed: ${e.message}`, 'error');
+                await addLog(JOB_ID, `Segment ${i} visual component failed: ${e.message}`, 'error');
             }
         }
 
-        if (videoFiles.length === 0) throw new Error('Zero video segments were successfully encoded.');
+        if (videoFiles.length === 0) throw new Error('No video segments successfully created.');
 
-        // 3. Concat Video
-        await addLog(JOB_ID, `Stitching all ${videoFiles.length} video segments...`);
-        const concatVideoPath = path.join(workDir, 'concat_video.mp4');
-        const videoListPath = path.join(workDir, 'video_list.txt');
-        fs.writeFileSync(videoListPath, videoFiles.map(f => `file '${f}'`).join('\n'));
+        // 3. Merged Assembly via complex filter
+        await addLog(JOB_ID, `Merging all segments into final creation...`);
+        const finalOutputPath = path.resolve(workDir, 'master.mp4');
+
+        let command = ffmpeg();
+        videoFiles.forEach(f => command = command.input(f));
+        audioFiles.forEach(f => command = command.input(f));
+
+        const vCount = videoFiles.length;
+        const aCount = audioFiles.length;
+
+        let filterStr = "";
+        for (let i = 0; i < vCount; i++) filterStr += `[${i}:v:0]`;
+        filterStr += `concat=n=${vCount}:v=1:a=0[outv];`;
+
+        if (aCount > 0) {
+            for (let i = 0; i < aCount; i++) filterStr += `[${vCount + i}:a:0]`;
+            filterStr += `concat=n=${aCount}:v=0:a=1[outa]`;
+        }
+
+        command = command.complexFilter(filterStr);
+        const outputOptions = ['-map [outv]'];
+        if (aCount > 0) {
+            outputOptions.push('-map [outa]');
+            outputOptions.push('-c:a aac');
+        }
+        outputOptions.push('-c:v libx264');
+        outputOptions.push('-pix_fmt yuv420p');
+        outputOptions.push('-shortest');
 
         await runFfmpeg(
-            ffmpeg()
-                .input(videoListPath)
-                .inputOptions(['-f', 'concat', '-safe', '0'])
-                .outputOptions(['-c', 'copy'])
-                .output(concatVideoPath)
+            command
+                .outputOptions(outputOptions)
+                .output(finalOutputPath)
         );
 
-        // 4. Concat Audio
-        let finalAudioPath = null;
-        if (audioFiles.length > 0) {
-            await addLog(JOB_ID, `Merging all voiceover tracks...`);
-            finalAudioPath = path.join(workDir, 'final_audio.mp3');
-            const audioListPath = path.join(workDir, 'audio_list.txt');
-            fs.writeFileSync(audioListPath, audioFiles.map(f => `file '${f}'`).join('\n'));
-
-            await runFfmpeg(
-                ffmpeg()
-                    .input(audioListPath)
-                    .inputOptions(['-f', 'concat', '-safe', '0'])
-                    .outputOptions(['-c', 'copy'])
-                    .output(finalAudioPath)
-            );
-        }
-
-        // 5. Final Master
-        await addLog(JOB_ID, `Assembling final master video file...`);
-        const finalOutputPath = path.join(workDir, 'master.mp4');
-
-        if (finalAudioPath && fs.existsSync(finalAudioPath)) {
-            await runFfmpeg(
-                ffmpeg()
-                    .input(concatVideoPath)
-                    .input(finalAudioPath)
-                    .outputOptions(['-c:v', 'copy', '-c:a', 'aac', '-map', '0:v:0', '-map', '1:a:0', '-shortest'])
-                    .output(finalOutputPath)
-            );
-        } else {
-            fs.copyFileSync(concatVideoPath, finalOutputPath);
-        }
-
         // 6. Upload
-        await addLog(JOB_ID, `Uploading final creation to storage...`);
+        await addLog(JOB_ID, `Uploading final master file...`);
         const finalBuffer = fs.readFileSync(finalOutputPath);
         await supabase.storage
             .from('pipeline_output')
@@ -226,7 +229,7 @@ async function main() {
                 upsert: true
             });
 
-        await addLog(JOB_ID, `✅ Production complete! Your video is ready.`, 'success');
+        await addLog(JOB_ID, `✅ Your video is ready for viewing!`, 'success');
         await updateJob(JOB_ID, {
             status: 'complete',
             progress: 100,
@@ -238,7 +241,9 @@ async function main() {
         await updateJob(JOB_ID, { status: 'error', error_message: err.message });
         process.exit(1);
     } finally {
-        if (fs.existsSync(workDir)) fs.rmSync(workDir, { recursive: true, force: true });
+        if (fs.existsSync(workDir)) {
+            try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (e) { }
+        }
     }
 }
 
