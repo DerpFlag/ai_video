@@ -41,6 +41,27 @@ async function setError(jobId: string, msg: string) {
     await updateJob(jobId, { status: 'error', error_message: msg });
 }
 
+async function withRetry<T>(
+    fn: () => Promise<T>,
+    retries = 5,
+    delay = 5000,
+    onRetry?: (error: any, attempt: number) => void
+): Promise<T> {
+    let lastError: any;
+    for (let i = 0; i <= retries; i++) {
+        try {
+            return await fn();
+        } catch (err) {
+            lastError = err;
+            if (i < retries) {
+                onRetry?.(err, i + 1);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+    }
+    throw lastError;
+}
+
 // ── Qwen TTS Synthesis via Gradio Space ──
 async function qwenSpaceTTS(text: string, speakerId: string): Promise<Uint8Array> {
     const isCloning = speakerId.startsWith('ref:');
@@ -150,35 +171,36 @@ async function generateJsons(jobId: string, script: string, segmentCount: number
     const voicePrompt = `Rewrite this script into ${segmentCount} natural voiceover segments. Format as valid JSON only: {"voice1": "text", ... , "voice${segmentCount}": "text"}. Rule: 30-50 words per segment. Script: ${script}`;
 
     try {
-        const voiceRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENROUTER_API_KEY}` },
-            body: JSON.stringify({
-                model,
-                messages: [{ role: 'system', content: 'Output valid JSON only.' }, { role: 'user', content: voicePrompt }],
-                temperature: 0.7,
-            }),
-        });
-        const voiceData = await voiceRes.json();
-        const rawVoice = voiceData.choices?.[0]?.message?.content || '{}';
-        const cleanVoice = rawVoice.replace(/```json|```/g, '').trim();
+        const { cleanVoice, cleanImage } = await withRetry(async () => {
+            const voiceRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENROUTER_API_KEY}` },
+                body: JSON.stringify({
+                    model,
+                    messages: [{ role: 'system', content: 'Output valid JSON only.' }, { role: 'user', content: voicePrompt }],
+                    temperature: 0.7,
+                }),
+            });
+            const voiceData = await voiceRes.json();
+            const rawVoice = voiceData.choices?.[0]?.message?.content || '{}';
+            const cleanVoice = rawVoice.replace(/```json|```/g, '').trim();
 
-        await addLog(jobId, 'Voice segments generated. Now generating image prompts...');
-        await updateJob(jobId, { progress: 15 });
+            const imagePrompt = `Generate ${segmentCount} detailed image prompts mirroring the style of the script. Format: {"image1": "prompt1", ...}. Segments: ${cleanVoice}`;
+            const imageRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENROUTER_API_KEY}` },
+                body: JSON.stringify({
+                    model,
+                    messages: [{ role: 'system', content: 'Output valid JSON only.' }, { role: 'user', content: imagePrompt }],
+                    temperature: 0.7,
+                }),
+            });
+            const imageData = await imageRes.json();
+            const rawImage = imageData.choices?.[0]?.message?.content || '{}';
+            const cleanImage = rawImage.replace(/```json|```/g, '').trim();
 
-        const imagePrompt = `Generate ${segmentCount} detailed image prompts mirroring the style of the script. Format: {"image1": "prompt1", ...}. Segments: ${cleanVoice}`;
-        const imageRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENROUTER_API_KEY}` },
-            body: JSON.stringify({
-                model,
-                messages: [{ role: 'system', content: 'Output valid JSON only.' }, { role: 'user', content: imagePrompt }],
-                temperature: 0.7,
-            }),
-        });
-        const imageData = await imageRes.json();
-        const rawImage = imageData.choices?.[0]?.message?.content || '{}';
-        const cleanImage = rawImage.replace(/```json|```/g, '').trim();
+            return { cleanVoice, cleanImage };
+        }, 5, 5000, (err, count) => addLog(jobId, `Retrying prompt generation (Attempt ${count}/5)...`, 'warning'));
 
         await addLog(jobId, 'Prompts successfully generated and validated.', 'success');
         await updateJob(jobId, {
@@ -207,7 +229,11 @@ async function generateVoice(jobId: string, voiceJson: string, speaker: string =
         await addLog(jobId, `Synthesizing voice segment ${i + 1}/${voiceKeys.length}...`);
 
         try {
-            const audioBytes = await qwenSpaceTTS(text, speaker);
+            const audioBytes = await withRetry(
+                () => qwenSpaceTTS(text, speaker),
+                5, 5000,
+                (err, count) => addLog(jobId, `Retrying segment ${i + 1} synthesis... (Attempt ${count}/5)`, 'warning')
+            );
 
             await supabase.storage
                 .from('pipeline_output')
@@ -280,14 +306,18 @@ async function generateImages(jobId: string, imageJson: string) {
         await addLog(jobId, `Creating visual frame ${i + 1}/${imageKeys.length}...`);
 
         try {
-            const fetchRes = await fetch("https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell", {
-                method: "POST",
-                headers: { "Authorization": `Bearer ${HF_TOKEN}`, "Content-Type": "application/json" },
-                body: JSON.stringify({ inputs: prompt }),
-            });
+            const imgBuffer = await withRetry(async () => {
+                const fetchRes = await fetch("https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell", {
+                    method: "POST",
+                    headers: { "Authorization": `Bearer ${HF_TOKEN}`, "Content-Type": "application/json" },
+                    body: JSON.stringify({ inputs: prompt }),
+                });
 
-            if (fetchRes.ok) {
-                const imgBuffer = await fetchRes.arrayBuffer();
+                if (!fetchRes.ok) throw new Error(`HF Status ${fetchRes.status}`);
+                return await fetchRes.arrayBuffer();
+            }, 5, 5000, (err, count) => addLog(jobId, `Retrying frame ${i + 1} generation... (Attempt ${count}/5)`, 'warning'));
+
+            if (imgBuffer) {
                 await supabase.storage
                     .from('pipeline_output')
                     .upload(`${outputFolder}/images/image_${i + 1}.jpg`, new Uint8Array(imgBuffer), {
@@ -297,7 +327,7 @@ async function generateImages(jobId: string, imageJson: string) {
 
                 await updateJob(jobId, { progress: 40 + Math.floor(((i + 1) / imageKeys.length) * 30) });
             } else {
-                throw new Error(`HF Image Failed: ${fetchRes.status}`);
+                throw new Error(`HF Image Generation Failed after retries`);
             }
         } catch (err) {
             await addLog(jobId, `Image ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`, 'warning');

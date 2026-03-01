@@ -69,20 +69,32 @@ function runFfmpeg(command) {
 }
 
 async function updateJob(jobId, updates) {
-    const { error } = await supabase.from('jobs').update(updates).eq('id', jobId);
+    const { error } = await supabase.from('jobs').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', jobId);
     if (error) console.error('Update job error:', error);
+}
+
+async function addLog(jobId, message, type = 'info') {
+    const timestamp = new Date().toISOString();
+    console.log(`[${type.toUpperCase()}] ${message}`);
+
+    const { data } = await supabase.from('jobs').select('logs').eq('id', jobId).single();
+    const logs = data?.logs || [];
+    logs.push({ message, type, timestamp });
+
+    await updateJob(jobId, { current_task: message, logs });
 }
 
 // ── Main Script ──
 async function main() {
-    console.log(`🎬 Starting Ken Burns stitcher for Job ID: ${JOB_ID}`);
+    await addLog(JOB_ID, `🎬 Starting cinematic video assembly...`);
 
     const workDir = path.join('/tmp', `stitch_${JOB_ID}`);
     try {
-        fs.mkdirSync(workDir, { recursive: true });
+        if (!fs.existsSync(workDir)) fs.mkdirSync(workDir, { recursive: true });
         const outputFolder = `job_${JOB_ID}`;
 
         await updateJob(JOB_ID, { current_task: 'Synthesizing motion video...', status: 'stitching', progress: 75 });
+        await addLog(JOB_ID, `Preparing to process ${SEGMENT_COUNT} segments.`, 'info');
 
         const videoFiles = [];
         const audioFiles = [];
@@ -97,18 +109,17 @@ async function main() {
 
             // 1. Download audio and get duration
             try {
-                console.log(`[${JOB_ID}] Downloading audio segment ${i}...`);
+                await addLog(JOB_ID, `Processing segment ${i}: Downloading assets...`);
                 await downloadFile(audioUrl, audioPath);
                 audioFiles.push(audioPath);
             } catch (e) {
-                console.warn(`[${JOB_ID}] Audio segment ${i} download failed:`, e.message);
+                await addLog(JOB_ID, `Audio segment ${i} missing, using default duration.`, 'warning');
             }
 
-            let duration = 5; // Default if audio missing
+            let duration = 6; // Default
             if (fs.existsSync(audioPath)) {
                 duration = await getDuration(audioPath);
             }
-            console.log(`[${JOB_ID}] Segment ${i} duration: ${duration.toFixed(2)}s`);
 
             // 2. Generate Ken Burns video from image
             try {
@@ -135,7 +146,7 @@ async function main() {
                     filter = `scale=1920:-1,zoompan=z=1.3:d=${totalFrames}:s=1280x720:x='(iw-(iw/zoom))-((iw-(iw/zoom))/d)*n':y='(ih-(ih/zoom))/2'`;
                 }
 
-                console.log(`[${JOB_ID}] Encoding segment ${i} with ${style} effect...`);
+                await addLog(JOB_ID, `Encoding segment ${i} (${duration.toFixed(1)}s) with ${style} style...`);
                 await runFfmpeg(
                     ffmpeg()
                         .input(imagePath)
@@ -152,37 +163,33 @@ async function main() {
                 videoFiles.push(videoPath);
                 await updateJob(JOB_ID, { progress: Math.min(75 + Math.floor((i / SEGMENT_COUNT) * 15), 90) });
             } catch (e) {
-                console.error(`[${JOB_ID}] Image segment ${i} processing failed:`, e.message);
+                await addLog(JOB_ID, `Segment ${i} visual failed: ${e.message}`, 'error');
             }
         }
 
-        if (videoFiles.length === 0) throw new Error('No video segments generated.');
+        if (videoFiles.length === 0) throw new Error('Zero video segments were successfully encoded.');
 
-        // 3. Concat all segments
-        await updateJob(JOB_ID, { current_task: 'Stitching video segments together...', progress: 92 });
-        console.log(`[${JOB_ID}] Stitching ${videoFiles.length} segments together...`);
+        // 3. Concat Video
+        await addLog(JOB_ID, `Stitching all ${videoFiles.length} video segments...`);
         const concatVideoPath = path.join(workDir, 'concat_video.mp4');
-        const concatListPath = path.join(workDir, 'video_list.txt');
-        const listContent = videoFiles.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n');
-        fs.writeFileSync(concatListPath, listContent);
+        const videoListPath = path.join(workDir, 'video_list.txt');
+        fs.writeFileSync(videoListPath, videoFiles.map(f => `file '${f}'`).join('\n'));
 
         await runFfmpeg(
             ffmpeg()
-                .input(concatListPath)
+                .input(videoListPath)
                 .inputOptions(['-f', 'concat', '-safe', '0'])
                 .outputOptions(['-c', 'copy'])
                 .output(concatVideoPath)
         );
 
-        // 4. Concat all audio
+        // 4. Concat Audio
         let finalAudioPath = null;
         if (audioFiles.length > 0) {
-            await updateJob(JOB_ID, { current_task: 'Merging voiceover segments...', progress: 94 });
-            console.log(`[${JOB_ID}] Merging voiceover segments...`);
+            await addLog(JOB_ID, `Merging all voiceover tracks...`);
             finalAudioPath = path.join(workDir, 'final_audio.mp3');
             const audioListPath = path.join(workDir, 'audio_list.txt');
-            const audioListContent = audioFiles.map(f => `file '${f.replace(/\\/g, '/')}'`).join('\n');
-            fs.writeFileSync(audioListPath, audioListContent);
+            fs.writeFileSync(audioListPath, audioFiles.map(f => `file '${f}'`).join('\n'));
 
             await runFfmpeg(
                 ffmpeg()
@@ -193,23 +200,16 @@ async function main() {
             );
         }
 
-        // 5. Final Assembly (Video + Audio)
-        await updateJob(JOB_ID, { current_task: 'Finalizing master video...', progress: 96 });
-        const finalOutputPath = path.join(workDir, 'final_output.mp4');
-        console.log(`[${JOB_ID}] Performing final assembly...`);
+        // 5. Final Master
+        await addLog(JOB_ID, `Assembling final master video file...`);
+        const finalOutputPath = path.join(workDir, 'master.mp4');
 
-        if (finalAudioPath) {
+        if (finalAudioPath && fs.existsSync(finalAudioPath)) {
             await runFfmpeg(
                 ffmpeg()
                     .input(concatVideoPath)
                     .input(finalAudioPath)
-                    .outputOptions([
-                        '-c:v', 'copy',
-                        '-c:a', 'aac',
-                        '-map', '0:v:0',
-                        '-map', '1:a:0',
-                        '-shortest'
-                    ])
+                    .outputOptions(['-c:v', 'copy', '-c:a', 'aac', '-map', '0:v:0', '-map', '1:a:0', '-shortest'])
                     .output(finalOutputPath)
             );
         } else {
@@ -217,7 +217,7 @@ async function main() {
         }
 
         // 6. Upload
-        console.log(`[${JOB_ID}] Uploading master video to Supabase...`);
+        await addLog(JOB_ID, `Uploading final creation to storage...`);
         const finalBuffer = fs.readFileSync(finalOutputPath);
         await supabase.storage
             .from('pipeline_output')
@@ -226,21 +226,19 @@ async function main() {
                 upsert: true
             });
 
+        await addLog(JOB_ID, `✅ Production complete! Your video is ready.`, 'success');
         await updateJob(JOB_ID, {
             status: 'complete',
             progress: 100,
-            current_task: 'All assets ready!',
             output_folder: outputFolder
         });
 
-        console.log(`[${JOB_ID}] ✅ Done! Video is ready in Storage.`);
-
     } catch (err) {
-        console.error("Master Stitch Error:", err);
-        await updateJob(JOB_ID, { status: 'error', error_message: `Stitching failed: ${err.message}` });
+        await addLog(JOB_ID, `CRITICAL FAILURE: ${err.message}`, 'error');
+        await updateJob(JOB_ID, { status: 'error', error_message: err.message });
         process.exit(1);
     } finally {
-        fs.rmSync(workDir, { recursive: true, force: true });
+        if (fs.existsSync(workDir)) fs.rmSync(workDir, { recursive: true, force: true });
     }
 }
 

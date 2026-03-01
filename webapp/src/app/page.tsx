@@ -297,7 +297,7 @@ export default function Home() {
                 <div className="progress-bar" style={{ marginBottom: 20 }}>
                   <div className="progress-fill" style={{ width: `${selectedJob.progress}%` }} />
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8 }}>
                   {PIPELINE_STEPS.map((step) => {
                     const state = getStepState(selectedJob.status, step.key);
                     return (
