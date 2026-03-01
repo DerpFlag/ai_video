@@ -168,7 +168,22 @@ async function generateJsons(jobId: string, script: string, segmentCount: number
     await updateJob(jobId, { status: 'generating_jsons', progress: 5 });
 
     const model = 'arcee-ai/trinity-large-preview:free';
-    const voicePrompt = `Rewrite this script into ${segmentCount} natural voiceover segments. Format as valid JSON only: {"voice1": "text", ... , "voice${segmentCount}": "text"}. Rule: 30-50 words per segment. Script: ${script}`;
+    const voicePrompt = `You are a professional voiceover script editor.
+Convert the RAW text into a clear, natural, spoken script formatted as valid JSON only.
+
+Output format:
+{
+  "voice1": "text",
+  "voice2": "text",
+  ...
+  "voice${segmentCount}": "text"
+}
+
+Rules:
+1) Produce EXACTLY ${segmentCount} segments. 
+   CRITICAL: Each segment MUST be 25-35 words. 
+   (25-35 words is required to achieve a ~10 second duration per segment).
+   Maintain logical and narrative flow.`;
 
     try {
         const { cleanVoice, cleanImage } = await withRetry(async () => {
@@ -183,12 +198,12 @@ async function generateJsons(jobId: string, script: string, segmentCount: number
             });
             const voiceData = await voiceRes.json();
             const rawVoice = voiceData.choices?.[0]?.message?.content || '{}';
-            const cleanVoice = rawVoice.replace(/```json|```/g, '').trim();
+            const cleanVoice = rawVoice.replace(/```json | ```/g, '').trim();
 
-            const imagePrompt = `Generate ${segmentCount} detailed image prompts mirroring the style of the script. Format: {"image1": "prompt1", ...}. Segments: ${cleanVoice}`;
+            const imagePrompt = `Generate ${segmentCount} detailed image prompts mirroring the style of the script.Format: { "image1": "prompt1", ... }.Segments: ${cleanVoice} `;
             const imageRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENROUTER_API_KEY}` },
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENROUTER_API_KEY} ` },
                 body: JSON.stringify({
                     model,
                     messages: [{ role: 'system', content: 'Output valid JSON only.' }, { role: 'user', content: imagePrompt }],
@@ -197,10 +212,10 @@ async function generateJsons(jobId: string, script: string, segmentCount: number
             });
             const imageData = await imageRes.json();
             const rawImage = imageData.choices?.[0]?.message?.content || '{}';
-            const cleanImage = rawImage.replace(/```json|```/g, '').trim();
+            const cleanImage = rawImage.replace(/```json | ```/g, '').trim();
 
             return { cleanVoice, cleanImage };
-        }, 5, 5000, (err, count) => addLog(jobId, `Retrying prompt generation (Attempt ${count}/5)...`, 'warning'));
+        }, 5, 5000, (err, count) => addLog(jobId, `Retrying prompt generation(Attempt ${count} / 5)...`, 'warning'));
 
         await addLog(jobId, 'Prompts successfully generated and validated.', 'success');
         await updateJob(jobId, {
@@ -211,18 +226,18 @@ async function generateJsons(jobId: string, script: string, segmentCount: number
 
         return { voiceJson: cleanVoice, imageJson: cleanImage };
     } catch (err) {
-        throw new Error(`OpenRouter failed: ${err instanceof Error ? err.message : String(err)}`);
+        throw new Error(`OpenRouter failed: ${err instanceof Error ? err.message : String(err)} `);
     }
 }
 
 // ── Step 2: Generate Voice ──
 async function generateVoice(jobId: string, voiceJson: string, speaker: string = "Ryan") {
     await updateJob(jobId, { status: 'generating_voice', progress: 35 });
-    await addLog(jobId, `Synthesizing high-quality voice using Qwen-TTS Speaker: ${speaker}...`);
+    await addLog(jobId, `Synthesizing high - quality voice using Qwen-TTS Speaker: ${speaker}...`);
 
     const voices = JSON.parse(voiceJson);
     const voiceKeys = Object.keys(voices);
-    const outputFolder = `job_${jobId}`;
+    const outputFolder = `job_${jobId} `;
 
     for (let i = 0; i < voiceKeys.length; i++) {
         const text = voices[voiceKeys[i]];

@@ -141,33 +141,45 @@ async function main() {
                 const fps = 30;
                 const totalFrames = Math.max(Math.ceil(duration * fps), 2);
 
-                // Fixed scaling to ensure zoompan stability
-                let filter = `scale=2560:-2,crop=1920:1080,`;
+                // Quality Scaling: Ensure we have vertical/horizontal headroom for the pan
+                let filter = `scale=3840:2160:force_original_aspect_ratio=increase,crop=3840:2160,`;
 
                 if (style === 'zoom_in') {
-                    filter += `zoompan=z='min(zoom+0.0015,1.5)':d=${totalFrames}:s=1280x720:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+                    filter += `zoompan=z='min(zoom+0.0015,1.5)':d=${totalFrames}:s=1920x1080:fps=30:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
                 } else if (style === 'zoom_out') {
-                    filter += `zoompan=z='if(lte(zoom,1.0),1.5,zoom-0.0015)':d=${totalFrames}:s=1280x720:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+                    filter += `zoompan=z='if(lte(zoom,1.0),1.5,zoom-0.0015)':d=${totalFrames}:s=1920x1080:fps=30:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
                 } else if (style === 'pan_right') {
-                    filter += `zoompan=z=1.3:d=${totalFrames}:s=1280x720:x='((iw-(iw/zoom))/${totalFrames})*n':y='(ih-(ih/zoom))/2'`;
+                    filter += `zoompan=z=1.3:d=${totalFrames}:s=1920x1080:fps=30:x='((iw-(iw/zoom))/${totalFrames})*n':y='(ih-(ih/zoom))/2'`;
                 } else {
-                    filter += `zoompan=z=1.3:d=${totalFrames}:s=1280x720:x='(iw-(iw/zoom))-((iw-(iw/zoom))/${totalFrames})*n':y='(ih-(ih/zoom))/2'`;
+                    filter += `zoompan=z=1.3:d=${totalFrames}:s=1920x1080:fps=30:x='(iw-(iw/zoom))-((iw-(iw/zoom))/${totalFrames})*n':y='(ih-(ih/zoom))/2'`;
                 }
 
                 await addLog(JOB_ID, `Encoding segment ${i} (${duration.toFixed(1)}s) with ${style}...`);
-                await runFfmpeg(
-                    ffmpeg()
-                        .input(imagePath)
-                        .inputOptions(['-loop', '1'])
-                        .outputOptions([
-                            '-c:v', 'libx264',
-                            '-t', duration.toFixed(3),
-                            '-pix_fmt', 'yuv420p',
-                            '-vf', filter,
-                            '-r', fps.toString()
-                        ])
-                        .output(videoPath)
-                );
+
+                // Retry encoding once if it fails (FFmpeg can be flaky with zoompan)
+                let attempts = 0;
+                while (attempts < 2) {
+                    try {
+                        await runFfmpeg(
+                            ffmpeg()
+                                .input(imagePath)
+                                .inputOptions(['-loop', '1'])
+                                .outputOptions([
+                                    '-c:v', 'libx264',
+                                    '-t', duration.toFixed(3),
+                                    '-pix_fmt', 'yuv420p',
+                                    '-vf', filter,
+                                    '-r', '30'
+                                ])
+                                .output(videoPath)
+                        );
+                        break;
+                    } catch (e) {
+                        attempts++;
+                        if (attempts >= 2) throw e;
+                        await new Promise(r => setTimeout(r, 1000));
+                    }
+                }
 
                 if (fs.existsSync(videoPath) && fs.statSync(videoPath).size > 0) {
                     videoFiles.push(videoPath);
