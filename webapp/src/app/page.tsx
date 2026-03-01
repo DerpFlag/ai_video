@@ -1,23 +1,35 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, Job } from '@/lib/supabase';
 
 const PIPELINE_STEPS = [
   { key: 'pending', label: 'Queued', icon: '⏳' },
-  { key: 'generating_jsons', label: 'Generating Scripts', icon: '📝' },
-  { key: 'generating_voice', label: 'Generating Voice', icon: '🎙️' },
-  { key: 'generating_images', label: 'Generating Images', icon: '🖼️' },
-  { key: 'generating_videos', label: 'Generating Videos', icon: '🎬' },
-  { key: 'stitching', label: 'Stitching & Assembly', icon: '🧩' },
-  { key: 'complete', label: 'Complete', icon: '✅' },
+  { key: 'generating_jsons', label: 'Scripts', icon: '📝' },
+  { key: 'generating_voice', label: 'Voices', icon: '🎙️' },
+  { key: 'generating_images', label: 'Images', icon: '🖼️' },
+  { key: 'stitching', label: 'Video', icon: '🎬' },
+  { key: 'complete', label: 'Success', icon: '✅' },
+];
+
+const QWEN_VOICES = [
+  { value: 'Ryan', label: 'Ryan (Default - US Male)' },
+  { value: 'Serena', label: 'Serena (US Female)' },
+  { value: 'Sohee', label: 'Sohee (Multilingual)' },
+  { value: 'Aiden', label: 'Aiden' },
+  { value: 'Dylan', label: 'Dylan' },
+  { value: 'Eric', label: 'Eric' },
+  { value: 'Ono_anna', label: 'Ono Anna' },
+  { value: 'Uncle_fu', label: 'Uncle Fu' },
+  { value: 'Vivian', label: 'Vivian' },
 ];
 
 function getStepState(jobStatus: string, stepKey: string) {
   const stepOrder = PIPELINE_STEPS.map(s => s.key);
   const currentIdx = stepOrder.indexOf(jobStatus);
   const stepIdx = stepOrder.indexOf(stepKey);
-  if (jobStatus === 'error') return stepIdx <= currentIdx ? 'error' : 'pending';
+  if (jobStatus === 'error') return stepIdx < currentIdx ? 'done' : stepIdx === currentIdx ? 'error' : 'pending';
+  if (stepKey === 'complete' && jobStatus === 'complete') return 'done';
   if (stepIdx < currentIdx) return 'done';
   if (stepIdx === currentIdx) return 'active';
   return 'pending';
@@ -46,10 +58,39 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
+  const logEndRef = useRef<HTMLDivElement>(null);
+  const logContainerRef = useRef<HTMLDivElement>(null);
+
   // Form state
   const [script, setScript] = useState('');
-  const [voiceName, setVoiceName] = useState('denis');
+  const [voiceName, setVoiceName] = useState(QWEN_VOICES[0].value);
   const [segmentCount, setSegmentCount] = useState(5);
+  const [customVoices, setCustomVoices] = useState<{ value: string, label: string }[]>([]);
+
+  // Fetch reference voices from storage + DB metadata
+  useEffect(() => {
+    const fetchReferenceVoices = async () => {
+      // 1. Fetch files from storage
+      const { data: storageFiles, error: storageError } = await supabase.storage.from('reference_voices').list();
+
+      // 2. Fetch metadata from voice_clones table
+      const { data: dbClones } = await supabase.from('voice_clones').select('*');
+
+      if (!storageError && storageFiles) {
+        const voices = storageFiles
+          .filter(f => f.name.endsWith('.wav') || f.name.endsWith('.mp3'))
+          .map(f => {
+            const dbMatch = dbClones?.find(c => c.file_name === f.name);
+            return {
+              value: `ref:${f.name}`,
+              label: dbMatch?.display_name ? `Clone: ${dbMatch.display_name}` : `Clone: ${f.name.split('.')[0]}`
+            };
+          });
+        setCustomVoices(voices);
+      }
+    };
+    fetchReferenceVoices();
+  }, []);
 
   // Fetch jobs
   const fetchJobs = useCallback(async () => {
@@ -57,11 +98,10 @@ export default function Home() {
       .from('jobs')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(20);
+      .limit(15);
 
     if (!error && data) {
       setJobs(data as Job[]);
-      // Update selected job if it exists without stale closures
       setSelectedJob(prev => {
         if (!prev) return null;
         const updated = data.find(j => j.id === prev.id);
@@ -76,6 +116,27 @@ export default function Home() {
     const interval = setInterval(fetchJobs, 3000);
     return () => clearInterval(interval);
   }, [fetchJobs]);
+
+  const lastJobIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const container = logContainerRef.current;
+    if (container && selectedJob) {
+      // Check if this is the SAME job getting new logs
+      const isSameJob = lastJobIdRef.current === selectedJob.id;
+      lastJobIdRef.current = selectedJob.id;
+
+      // Only auto-scroll if it's the same job AND user was already at the bottom
+      const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
+
+      if (isSameJob && isAtBottom) {
+        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+      } else if (!isSameJob) {
+        // When switching jobs, scroll to top of logs
+        container.scrollTop = 0;
+      }
+    }
+  }, [selectedJob?.logs, selectedJob?.id]);
 
   // Submit new job
   const handleSubmit = async (e: React.FormEvent) => {
@@ -93,8 +154,6 @@ export default function Home() {
       if (data.success) {
         setScript('');
         fetchJobs();
-      } else {
-        console.error('Submit failed:', data.error);
       }
     } catch (err) {
       console.error('Submit error:', err);
@@ -111,73 +170,72 @@ export default function Home() {
 
           {/* Submit Form */}
           <div className="glass-card animate-fade-in" style={{ padding: 24 }}>
-            <h2 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span>🚀</span> New Job
+            <h2 className="form-label" style={{ fontSize: '1.1rem', color: 'var(--text-primary)', marginBottom: 20 }}>
+              🚀 Start New Pipeline
             </h2>
             <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div>
                 <label className="form-label">Script</label>
                 <textarea
-                  id="script-input"
                   className="input-field"
-                  placeholder="Paste your script here... The AI will break it into segments, generate voiceovers, images, and videos for each."
+                  placeholder="Paste your story or script... Flux will generate images for each part."
                   value={script}
                   onChange={e => setScript(e.target.value)}
                   rows={5}
                 />
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 12 }}>
                 <div>
                   <label className="form-label">Voice</label>
                   <select
-                    id="voice-select"
                     className="input-field"
                     value={voiceName}
                     onChange={e => setVoiceName(e.target.value)}
                   >
-                    <option value="denis">Denis</option>
-                    <option value="custom">Custom</option>
+                    <optgroup label="Default Qwen Voices">
+                      {QWEN_VOICES.map(v => (
+                        <option key={v.value} value={v.value}>{v.label}</option>
+                      ))}
+                    </optgroup>
+                    {customVoices.length > 0 && (
+                      <optgroup label="Cloned Reference Voices">
+                        {customVoices.map(v => (
+                          <option key={v.value} value={v.value}>{v.label}</option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
                 </div>
                 <div>
                   <label className="form-label">Segments</label>
                   <input
-                    id="segment-count"
                     type="number"
                     className="input-field"
-                    min={1}
-                    max={30}
+                    min={1} max={30}
                     value={segmentCount}
                     onChange={e => setSegmentCount(parseInt(e.target.value) || 5)}
                   />
                 </div>
               </div>
               <button
-                id="submit-btn"
                 type="submit"
                 className="btn-gradient"
                 disabled={submitting || !script.trim()}
               >
-                {submitting ? '⏳ Submitting...' : '🎬 Generate Video'}
+                {submitting ? '⏳ Submitting...' : '✨ Generate Assets'}
               </button>
             </form>
           </div>
 
           {/* Job List */}
           <div className="glass-card" style={{ padding: 20 }}>
-            <h2 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: 16, color: 'var(--text-secondary)' }}>
-              Recent Jobs
-            </h2>
+            <h2 className="form-label" style={{ marginBottom: 16 }}>Recent Tasks</h2>
             {loading ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {[1, 2, 3].map(i => (
-                  <div key={i} className="skeleton" style={{ height: 64, borderRadius: 12 }} />
-                ))}
+                {[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: 60, borderRadius: 12 }} />)}
               </div>
             ) : jobs.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '30px 0', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                No jobs yet. Submit your first script above! ☝️
-              </div>
+              <div style={{ textAlign: 'center', padding: '30px 0', color: 'var(--text-muted)' }}>No tasks yet.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {jobs.map((job) => {
@@ -186,31 +244,18 @@ export default function Home() {
                     <div
                       key={job.id}
                       className={`job-card glass-card ${selectedJob?.id === job.id ? 'active' : ''}`}
-                      style={{ padding: '14px 16px', borderRadius: 12, cursor: 'pointer' }}
+                      style={{ padding: '12px 16px', borderRadius: 10 }}
                       onClick={() => setSelectedJob(job)}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                        <span style={{ fontSize: '0.85rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>
-                          {job.script.substring(0, 50)}...
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                        <span style={{ fontSize: '0.85rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>
+                          {job.script.substring(0, 40)}...
                         </span>
-                        <span className={`status-badge ${badge.className}`}>
-                          {badge.dotClass && <span className={`pulse-dot ${badge.dotClass}`} />}
-                          {badge.label}
-                        </span>
+                        <span className={`status-badge ${badge.className}`}>{badge.label}</span>
                       </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                          {job.segment_count} segments • {job.voice_name}
-                        </span>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                          {timeAgo(job.created_at)}
-                        </span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        <span>{job.segment_count} frames • {timeAgo(job.created_at)}</span>
                       </div>
-                      {job.status !== 'pending' && job.status !== 'complete' && job.status !== 'error' && (
-                        <div className="progress-bar" style={{ marginTop: 8 }}>
-                          <div className="progress-fill" style={{ width: `${job.progress}%` }} />
-                        </div>
-                      )}
                     </div>
                   );
                 })}
@@ -220,133 +265,115 @@ export default function Home() {
         </div>
 
         {/* ---- RIGHT PANEL: Job Detail ---- */}
-        <div className="glass-card animate-fade-in" style={{ padding: 28, minHeight: 500 }}>
+        <div className="glass-card animate-fade-in" style={{ padding: 28, minHeight: 600 }}>
           {!selectedJob ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', minHeight: 450, color: 'var(--text-muted)', gap: 12 }}>
-              <span style={{ fontSize: '3rem', opacity: 0.4 }}>🎬</span>
-              <span style={{ fontSize: '0.95rem' }}>Select a job to view details</span>
-              <span style={{ fontSize: '0.8rem', maxWidth: 300, textAlign: 'center', lineHeight: 1.5 }}>
-                Submit a script to start the AI pipeline. Progress will update in real-time.
-              </span>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', minHeight: 500, color: 'var(--text-muted)', gap: 16 }}>
+              <span style={{ fontSize: '3.5rem' }}>🖼️</span>
+              <div style={{ textAlign: 'center' }}>
+                <p style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>Cloud Studio</p>
+                <p style={{ fontSize: '0.85rem', maxWidth: 280, marginTop: 4 }}>Select a task from the list or start a new one to generate AI assets.</p>
+              </div>
             </div>
           ) : (
             <div>
-              {/* Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: 24 }}>
+              {/* Detail Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: 30 }}>
                 <div>
-                  <h2 style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: 4 }}>Job Details</h2>
-                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                    {selectedJob.id.substring(0, 8)}...
-                  </span>
+                  <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Task Execution</h2>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'monospace', marginTop: 4 }}>ID: {selectedJob.id}</p>
                 </div>
-                {(() => {
-                  const badge = getStatusBadge(selectedJob.status);
-                  return (
-                    <span className={`status-badge ${badge.className}`}>
-                      {badge.dotClass && <span className={`pulse-dot ${badge.dotClass}`} />}
-                      {badge.label}
-                    </span>
-                  );
-                })()}
+                <div style={{ textAlign: 'right' }}>
+                  <div className={`status-badge ${getStatusBadge(selectedJob.status).className}`}>
+                    {selectedJob.status}
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--accent-primary)', fontWeight: 700, marginTop: 8 }}>
+                    {selectedJob.progress}%
+                  </div>
+                </div>
               </div>
 
-              {/* Progress */}
-              <div style={{ marginBottom: 24 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Progress</span>
-                  <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--accent-primary)' }}>
-                    {selectedJob.progress}%
-                  </span>
-                </div>
-                <div className="progress-bar">
+              {/* Progress Tracker */}
+              <div style={{ marginBottom: 32 }}>
+                <div className="progress-bar" style={{ marginBottom: 20 }}>
                   <div className="progress-fill" style={{ width: `${selectedJob.progress}%` }} />
                 </div>
-              </div>
-
-              {/* Pipeline Steps */}
-              <div style={{ marginBottom: 24 }}>
-                <h3 style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Pipeline Steps
-                </h3>
-                {PIPELINE_STEPS.map((step) => {
-                  const state = getStepState(selectedJob.status, step.key);
-                  return (
-                    <div key={step.key} className={`step-item step-${state}`}>
-                      <div className="step-icon">
-                        {state === 'done' ? '✓' : state === 'error' ? '✕' : step.icon}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8 }}>
+                  {PIPELINE_STEPS.map((step) => {
+                    const state = getStepState(selectedJob.status, step.key);
+                    return (
+                      <div key={step.key} style={{ textAlign: 'center' }}>
+                        <div className={`step-icon step-${state}`} style={{ margin: '0 auto 8px', width: 44, height: 44, fontSize: '1.2rem' }}>
+                          {state === 'done' ? '✓' : step.icon}
+                        </div>
+                        <p style={{ fontSize: '0.7rem', fontWeight: 600, color: state === 'active' ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                          {step.label}
+                        </p>
                       </div>
-                      <span style={{
-                        fontSize: '0.9rem',
-                        fontWeight: state === 'active' ? 600 : 400,
-                        color: state === 'active' ? 'var(--text-primary)' : state === 'done' ? 'var(--success)' : 'var(--text-muted)',
-                      }}>
-                        {step.label}
-                      </span>
-                      {state === 'active' && (
-                        <span style={{ fontSize: '0.75rem', color: 'var(--accent-primary)', marginLeft: 'auto' }}>
-                          In progress...
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
 
-              {/* Error Message */}
-              {selectedJob.error_message && (
-                <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 12, padding: 16, marginBottom: 24 }}>
-                  <h3 style={{ fontSize: '0.85rem', fontWeight: 600, color: '#f87171', marginBottom: 6 }}>Error</h3>
-                  <p style={{ fontSize: '0.85rem', color: '#fca5a5', lineHeight: 1.5 }}>{selectedJob.error_message}</p>
+              {/* Current Status Section */}
+              <div style={{ marginBottom: 32 }}>
+                <h3 className="form-label" style={{ marginBottom: 10 }}>Current Activity</h3>
+                <div style={{ padding: '14px 18px', background: 'rgba(99,102,241,0.08)', borderRadius: 12, border: '1px solid var(--border-glass)', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div className="pulse-dot pulse-dot-processing" />
+                  <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>{selectedJob.current_task || 'Initializing...'}</span>
+                </div>
+              </div>
+
+              {/* Execution Logs */}
+              <div style={{ marginBottom: 32 }}>
+                <h3 className="form-label" style={{ marginBottom: 10 }}>Live Execution Logs</h3>
+                <div
+                  className="log-container"
+                  ref={logContainerRef}
+                >
+                  {selectedJob.logs && selectedJob.logs.length > 0 ? (
+                    selectedJob.logs.map((log, idx) => (
+                      <div key={idx} className="log-item">
+                        <span className="log-timestamp">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                        <span className={`log-message log-${log.type}`}>{log.message}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                      Waiting for log data...
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Output Assets */}
+              {selectedJob.status === 'complete' && (
+                <div className="animate-fade-in" style={{ padding: 20, background: 'rgba(16,185,129,0.05)', borderRadius: 16, border: '1px solid rgba(16,185,129,0.2)', marginBottom: 32 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <h4 style={{ color: 'var(--success)', fontWeight: 700, marginBottom: 4 }}>Task Complete!</h4>
+                      <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>All assets generated and stored.</p>
+                    </div>
+                    <a
+                      href={`https://supabase.com/dashboard/project/acpxzjrjhvvnwnqzgbxk/storage/buckets/pipeline_output?filter=${selectedJob.output_folder}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn-gradient"
+                      style={{ padding: '8px 20px', fontSize: '0.85rem', textDecoration: 'none' }}
+                    >
+                      Browse Assets
+                    </a>
+                  </div>
                 </div>
               )}
 
-              {/* Output Link */}
-              {selectedJob.status === 'complete' && selectedJob.output_folder && (
-                <div style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 12, padding: 16, marginBottom: 24 }}>
-                  <h3 style={{ fontSize: '0.85rem', fontWeight: 600, color: '#34d399', marginBottom: 8 }}>🎉 Output Ready!</h3>
-                  <a
-                    href={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/pipeline_output/${selectedJob.output_folder}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 6,
-                      color: '#34d399', fontSize: '0.9rem', fontWeight: 600, textDecoration: 'none',
-                      padding: '8px 16px', background: 'rgba(16,185,129,0.1)', borderRadius: 8,
-                    }}
-                  >
-                    📂 View in Storage
-                  </a>
-                </div>
-              )}
-
-              {/* Script Preview */}
-              <div style={{ marginBottom: 20 }}>
-                <h3 style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Script
-                </h3>
-                <div style={{
-                  background: 'rgba(10,10,15,0.5)', borderRadius: 12, padding: 16,
-                  fontSize: '0.85rem', lineHeight: 1.7, color: 'var(--text-secondary)',
-                  maxHeight: 160, overflowY: 'auto',
-                }}>
+              {/* Script Context */}
+              <div>
+                <h3 className="form-label" style={{ marginBottom: 10 }}>Script Context</h3>
+                <div style={{ padding: 16, background: 'rgba(10,10,15,0.4)', borderRadius: 12, fontSize: '0.85rem', lineHeight: 1.6, color: 'var(--text-secondary)', maxHeight: 120, overflowY: 'auto' }}>
                   {selectedJob.script}
                 </div>
               </div>
 
-              {/* Metadata */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-                {[
-                  { label: 'Voice', value: selectedJob.voice_name, icon: '🎙️' },
-                  { label: 'Segments', value: selectedJob.segment_count, icon: '📊' },
-                  { label: 'Created', value: timeAgo(selectedJob.created_at), icon: '🕐' },
-                ].map(m => (
-                  <div key={m.label} style={{ background: 'rgba(10,10,15,0.4)', borderRadius: 10, padding: '12px 14px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '1.2rem', marginBottom: 4 }}>{m.icon}</div>
-                    <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>{m.value}</div>
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 2 }}>{m.label}</div>
-                  </div>
-                ))}
-              </div>
             </div>
           )}
         </div>

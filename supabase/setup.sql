@@ -11,21 +11,22 @@ CREATE TABLE IF NOT EXISTS jobs (
   
   -- Input
   script TEXT NOT NULL,
-  voice_name TEXT NOT NULL DEFAULT 'denis',
+  voice_name TEXT NOT NULL DEFAULT 'en-US-AndrewMultilingualNeural',
   segment_count INTEGER NOT NULL DEFAULT 5,
   
   -- Status tracking
   status TEXT NOT NULL DEFAULT 'pending' 
-    CHECK (status IN ('pending', 'generating_jsons', 'generating_voice', 'generating_images', 'generating_videos', 'stitching', 'complete', 'error')),
+    CHECK (status IN ('pending', 'generating_jsons', 'generating_voice', 'generating_images', 'complete', 'error')),
   progress INTEGER NOT NULL DEFAULT 0 CHECK (progress >= 0 AND progress <= 100),
   error_message TEXT,
+  current_task TEXT,
+  logs JSONB DEFAULT '[]'::jsonb,
   
   -- Generated JSON outputs
   voice_json TEXT,
   image_json TEXT,
-  video_json TEXT,
   
-  -- Output location
+  -- Output location (folder in Storage)
   output_folder TEXT
 );
 

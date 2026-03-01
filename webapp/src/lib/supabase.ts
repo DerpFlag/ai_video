@@ -15,7 +15,8 @@ export type Job = {
   progress: number;
   voice_json: string | null;
   image_json: string | null;
-  video_json: string | null;
   error_message: string | null;
   output_folder: string | null;
+  current_task: string | null;
+  logs: Array<{ message: string; type: string; timestamp: string }> | null;
 };

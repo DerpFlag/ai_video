@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
             .from('jobs')
             .insert({
                 script,
-                voice_name: voice_name || 'denis',
+                voice_name: voice_name || 'en-US-AndrewMultilingualNeural',
                 segment_count: parseInt(segment_count) || 5,
                 status: 'pending',
                 progress: 0,
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
             body: JSON.stringify({
                 job_id: job.id,
                 script,
-                voice_name: voice_name || 'denis',
+                voice_name: voice_name || 'en-US-AndrewMultilingualNeural',
                 segment_count: parseInt(segment_count) || 5,
             }),
         }).catch(err => {
