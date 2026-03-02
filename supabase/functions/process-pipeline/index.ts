@@ -165,6 +165,9 @@ async function qwenSpaceTTS(text: string, speakerId: string): Promise<Uint8Array
                 const content = line.replace(/^data:\s*/, '').trim();
                 if (!content || content === '[DONE]') continue;
                 if (content === 'null') {
+                    if (lastEventType === 'error') {
+                        throw new Error(`TTS Space returned error (rate limit or overload—often on 3rd+ request). Wait longer between segments and retry.`);
+                    }
                     continue;
                 }
                 try {
@@ -185,6 +188,7 @@ async function qwenSpaceTTS(text: string, speakerId: string): Promise<Uint8Array
                     }
                 } catch (e) {
                     if (e instanceof Error && e.message.startsWith('TTS Space error:')) throw e;
+                    if (e instanceof Error && e.message.includes('rate limit or overload')) throw e;
                 }
             }
         }
@@ -343,9 +347,10 @@ ${cleanVoice}`;
     }
 }
 
-// Delay between TTS requests to avoid Space rate limits / overload (voice clone often fails after 2–3 segments without this)
+// Delay between TTS requests; voice clone needs long cooldown after every 2 segments (Space often errors on 3rd request)
 const TTS_DELAY_MS = 5000;
-const TTS_RETRY_DELAY_MS = 10000;
+const TTS_RETRY_DELAY_MS = 8000;
+const TTS_VOICE_CLONE_COOLDOWN_AFTER_2_MS = 22000;
 
 // ── Step 2: Generate Voice ──
 async function generateVoice(jobId: string, voiceJson: string, speaker: string = "Ryan") {
@@ -356,10 +361,14 @@ async function generateVoice(jobId: string, voiceJson: string, speaker: string =
     const voiceKeys = Object.keys(voices);
     const outputFolder = `job_${jobId}`;
     const isVoiceClone = speaker.startsWith('ref:');
-    const segmentDelayMs = isVoiceClone ? 6000 : TTS_DELAY_MS;
+    const segmentDelayMs = isVoiceClone ? 7000 : TTS_DELAY_MS;
 
     for (let i = 0; i < voiceKeys.length; i++) {
         if (i > 0) await new Promise(r => setTimeout(r, segmentDelayMs));
+        if (isVoiceClone && i >= 2 && i % 2 === 0) {
+            await addLog(jobId, `Cooldown 22s before segment ${i + 1} (avoids Space error on 3rd+ request)...`, 'info');
+            await new Promise(r => setTimeout(r, TTS_VOICE_CLONE_COOLDOWN_AFTER_2_MS));
+        }
 
         const text = voices[voiceKeys[i]];
         await addLog(jobId, `Synthesizing voice segment ${i + 1}/${voiceKeys.length}...`);
@@ -368,10 +377,10 @@ async function generateVoice(jobId: string, voiceJson: string, speaker: string =
         try {
             const audioBytes = await withRetry(
                 () => qwenSpaceTTS(text, speaker),
-                5, TTS_RETRY_DELAY_MS,
+                3, TTS_RETRY_DELAY_MS,
                 (err, count) => {
                     lastErr = err instanceof Error ? err : new Error(String(err));
-                    addLog(jobId, `Retrying segment ${i + 1} (Attempt ${count}/5): ${lastErr.message}`, 'warning');
+                    addLog(jobId, `Retrying segment ${i + 1} (Attempt ${count}/3): ${lastErr.message}`, 'warning');
                 }
             );
 
@@ -386,8 +395,9 @@ async function generateVoice(jobId: string, voiceJson: string, speaker: string =
         } catch (err) {
             lastErr = err instanceof Error ? err : new Error(String(err));
             await addLog(jobId, `Voice segment ${i + 1} failed after retries: ${lastErr.message}`, 'error');
-            await addLog(jobId, `Skipping segment ${i + 1} and continuing with remaining segments.`, 'warning');
-            await new Promise(r => setTimeout(r, TTS_DELAY_MS));
+            await addLog(jobId, i + 1 < voiceKeys.length ? `Skipping segment ${i + 1}; continuing with segment ${i + 2} of ${voiceKeys.length}.` : `Skipping segment ${i + 1}. Voice step done.`, 'warning');
+            await updateJob(jobId, { progress: Math.min(35 + Math.floor(((i + 1) / voiceKeys.length) * 5), 39) });
+            await new Promise(r => setTimeout(r, 2000));
         }
     }
 
