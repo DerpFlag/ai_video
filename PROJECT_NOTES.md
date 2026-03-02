@@ -284,7 +284,7 @@ Input JSON:
 
 ## Fixes / behaviour notes
 
-- **Stitcher**: If an MP3 fails ffprobe (e.g. truncated/corrupt from TTS), the script no longer crashes. It uses a default duration for that segment and skips that file in the audio concat, so the job can still complete (video with fewer or no audio segments if all fail). Critical failure messages are truncated to one line (~500 chars) in the job log.
+- **Stitcher**: If an MP3 fails ffprobe (e.g. truncated/corrupt from TTS), the script no longer crashes. It uses a default duration for that segment and skips that file in the audio concat, so the job can still complete (video with fewer or no audio segments if all fail). Critical failure messages are truncated to one line (~500 chars) in the job log. **Pan (pan_right/pan_left)**: zoompan x/y expressions now use a literal zoom value (1.3) and float-friendly math so pan segments don’t fail with FFmpeg exit 234.
 - **Webapp**: When a job is in `error` status, `error_message` is shown in the same "Live Execution Logs" list as a final log line (same styling). Long messages use `.log-error-block` (pre-wrap, word-break) so layout stays consistent.
 - **Edge function**: `outputFolder` for voice uploads is `job_<id>` with no trailing space so stitcher paths match.
 - **TTS (Edge TTS)**: We use **Microsoft Edge TTS** via `edge-tts-universal`. No API key, no cooldowns, no voice clone. Short delay (800ms) between segments; 3 retries (3s apart) on failure. If a segment fails after retries, we skip it and continue. **Qwen TTS backup**: See `docs/backups/tts-qwen-backup.md` and `tts-qwen-backup.ts` to restore Qwen (voice clone, Space-based).
