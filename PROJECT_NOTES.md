@@ -1,6 +1,34 @@
 # AI Video Pipeline — Project Notes
 
-This document describes what we're building, how it works, which APIs and keys are used, and how the webapp and pipeline interact.
+This document describes what we're building, how it works, which APIs and keys are used, and how the webapp and pipeline interact. **Keep this file updated when making major changes to the project.**
+
+---
+
+## Supabase Project
+
+| | |
+|--|--|
+| **Project name** | ai-video-pipeline |
+| **Project ID** | `acpxzjrjhvvnwnqzgbxk` |
+| **Project URL** | `https://acpxzjrjhvvnwnqzgbxk.supabase.co` |
+
+---
+
+## Keys and API values (sensitive — do not commit to public repos)
+
+### Supabase (project `acpxzjrjhvvnwnqzgbxk`)
+
+| Key | Value | Use |
+|-----|--------|-----|
+| **Project URL** | `https://acpxzjrjhvvnwnqzgbxk.supabase.co` | Webapp + Edge Function + stitcher |
+| **Publishable key** | Set in Dashboard → API | Webapp: `NEXT_PUBLIC_SUPABASE_ANON_KEY` (optional alternate to anon JWT) |
+| **Secret key** | Set in Dashboard → API (do not commit) | Backend / server-only use |
+| **Anon (public) JWT** | Set in Dashboard → API | Webapp: `NEXT_PUBLIC_SUPABASE_ANON_KEY` (standard) |
+| **Service role JWT** | Set in Dashboard → API | Edge Function + GitHub Actions: `SUPABASE_SERVICE_ROLE_KEY` (Supabase injects when deployed) |
+
+Store actual values in `webapp/.env.local` (gitignored) and in Supabase/GitHub secrets. Do not commit real keys.
+
+**Webapp env**: `webapp/.env.local` (gitignored) should set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` so the app can create jobs and trigger the edge function. Run `npm run dev` in `webapp/` and open http://localhost:3000 to verify.
 
 ---
 
@@ -48,7 +76,7 @@ The user picks **segment count** (e.g. 5 or 30). Prompts (voice and image) are *
 |-------|-------------|
 | **Script** | Raw text (article, story, etc.). No fixed length. |
 | **Voice** | Built-in Qwen voices (Ryan, Serena, Sohee, …) or **Clone: &lt;name&gt;** (custom voice from `reference_voices` bucket + `voice_clones` table). |
-| **Segment count** | Number of segments (e.g. 5, 10, 30). Clamped to 1–60 in the edge function. Drives how many voice/image segments are generated. |
+| **Segment count** | The **count** control in the webapp (e.g. 5, 10, 30). Sent as `segment_count`; clamped to 1–60 in the edge function. Drives how many voice/image segments are generated. |
 
 ---
 
@@ -122,7 +150,8 @@ Secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`. Optional: `MINIMAX_API_KEY`, `M
 
 ## Prompts (Dynamic by segment_count)
 
-- **Voice prompt**: Asks the LLM for **exactly N** paragraphs (`voice1` … `voiceN`), 40–60 words each, TTS-friendly, output only valid JSON. Placeholder: raw script.
+- **Segment count (webapp)**: The “Segments” control is how many prompts you want in the JSON (voice1…voiceN and image1…imageN). N = segment count (1–60).
+- **Voice prompt**: Asks the LLM for **exactly N** paragraphs (`voice1` … `voiceN`). **Each paragraph must be 40–60 words** (~50); the prompt and system message stress this so TTS segments are ~20–30 seconds of speech, not 2 seconds. TTS-friendly, output only valid JSON. Placeholder: raw script.
 - **Image prompt**: Input is the **generated voice JSON**. Asks for **exactly N** image prompts (`image1` … `imageN`), consistent style, rich visual details, output only valid JSON.
 
 Both N values are the same and come from the user’s **segment count** (clamped 1–60).
@@ -144,11 +173,21 @@ Both N values are the same and come from the user’s **segment count** (clamped
 
 ---
 
+## Fixes / behaviour notes
+
+- **Stitcher**: If an MP3 fails ffprobe (e.g. truncated/corrupt from TTS), the script no longer crashes. It uses a default duration for that segment and skips that file in the audio concat, so the job can still complete (video with fewer or no audio segments if all fail). Critical failure messages are truncated to one line (~500 chars) in the job log.
+- **Webapp**: When a job is in `error` status, `error_message` is shown in the same "Live Execution Logs" list as a final log line (same styling). Long messages use `.log-error-block` (pre-wrap, word-break) so layout stays consistent.
+- **Edge function**: `outputFolder` for voice uploads is `job_<id>` with no trailing space so stitcher paths match.
+
+---
+
 ## Deploy / Update Checklist
 
-1. **Supabase**: Deploy edge function: `supabase functions deploy process-pipeline`. Set secrets as above.
+1. **Supabase** (project linked as `acpxzjrjhvvnwnqzgbxk`):
+   - From repo root: `npx supabase functions deploy process-pipeline` (no global install; uses npx).
+   - Ensure secrets are set: `npx supabase secrets set OPENROUTER_API_KEY=...` etc.
 2. **GitHub**: Push code; ensure repo secrets are set for the stitcher workflow.
-3. **Webapp**: Deploy (e.g. Vercel) with `NEXT_PUBLIC_SUPABASE_*` env vars.
+3. **Webapp**: Deploy (e.g. Vercel) with `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` (use Dashboard → API for anon/publishable key).
 
 ---
 

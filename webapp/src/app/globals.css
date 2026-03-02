@@ -444,3 +444,10 @@ select.input-field {
 .log-error {
   color: #f87171;
 }
+
+/* Long/block error messages (e.g. ffprobe output) — same row layout, wrap inside message */
+.log-error-block {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 100%;
+}

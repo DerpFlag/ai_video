@@ -118,17 +118,21 @@ async function main() {
             const imageUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/images/image_${i}.jpg`;
             const audioUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/audio/voice_${i}.mp3`;
 
-            // 1. Download audio and get duration
+            // 1. Download audio and get duration (skip corrupt/invalid MP3s for concat, use default duration)
+            let duration = 6;
             try {
                 await downloadFile(audioUrl, audioPath);
-                audioFiles.push(audioPath);
+                if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 0) {
+                    try {
+                        duration = await getDuration(audioPath);
+                        audioFiles.push(audioPath);
+                    } catch (probeErr) {
+                        await addLog(JOB_ID, `Segment ${i} audio invalid or truncated, using ${duration}s.`, 'warning');
+                        // do not push to audioFiles so we don't pass corrupt file to concat
+                    }
+                }
             } catch (e) {
-                await addLog(JOB_ID, `Missing audio for segment ${i}, using default 6s.`, 'warning');
-            }
-
-            let duration = 6;
-            if (fs.existsSync(audioPath)) {
-                duration = await getDuration(audioPath);
+                await addLog(JOB_ID, `Missing audio for segment ${i}, using default ${duration}s.`, 'warning');
             }
 
             // 2. Generate Ken Burns video
@@ -249,7 +253,8 @@ async function main() {
         });
 
     } catch (err) {
-        await addLog(JOB_ID, `CRITICAL FAILURE: ${err.message}`, 'error');
+        const shortMessage = (err.message || String(err)).split('\n')[0].slice(0, 500);
+        await addLog(JOB_ID, `Stitcher failed: ${shortMessage}`, 'error');
         await updateJob(JOB_ID, { status: 'error', error_message: err.message });
         process.exit(1);
     } finally {

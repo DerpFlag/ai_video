@@ -168,24 +168,26 @@ async function generateJsons(jobId: string, script: string, segmentCount: number
     await updateJob(jobId, { status: 'generating_jsons', progress: 5 });
 
     const model = 'arcee-ai/trinity-large-preview:free';
-    // Voice prompt: RAW text → N spoken paragraphs as JSON (dynamic by segment_count)
+    // Voice prompt: RAW text → N spoken paragraphs as JSON; segment_count = number of prompts; each ~50 words
     const voicePrompt = `You are a professional voiceover script editor.
 
-Convert the RAW text into a clear, natural, spoken script formatted as valid JSON only.
+TASK: Split the RAW text into EXACTLY ${segmentCount} segments. Output valid JSON only with keys voice1 to voice${segmentCount}.
+
+CRITICAL — WORD COUNT: Every segment must be 40–60 words (aim for ~50). Count the words. Segments that are only 1–2 sentences or under ~30 words are WRONG and must be expanded. Each segment should take roughly 20–30 seconds to read aloud.
 
 Output format:
 {
-  "voice1": "text",
-  "voice2": "text",
+  "voice1": "first segment text, 40-60 words",
+  "voice2": "second segment text, 40-60 words",
   ...
-  "voice${segmentCount}": "text"
+  "voice${segmentCount}": "last segment text, 40-60 words"
 }
 
 Rules:
 
 1) Produce EXACTLY ${segmentCount} paragraphs: voice1 → voice${segmentCount}.
-   Each paragraph must be 40–60 words.
-   Maintain logical and narrative flow.
+   Each paragraph MUST be 40–60 words. Do not output short 1–2 sentence chunks.
+   Maintain logical and narrative flow across segments.
 
 2) Rewrite for speech:
    - Use conversational language
@@ -225,7 +227,7 @@ ${script}`;
                 body: JSON.stringify({
                     model,
                     messages: [
-                        { role: 'system', content: 'You are a professional voiceover script editor.' },
+                        { role: 'system', content: 'You are a professional voiceover script editor. You always output exactly the requested number of segments. Every segment must be 40-60 words; short segments are invalid.' },
                         { role: 'user', content: voicePrompt }
                     ],
                     temperature: 0.7,
@@ -303,7 +305,7 @@ async function generateVoice(jobId: string, voiceJson: string, speaker: string =
 
     const voices = JSON.parse(voiceJson);
     const voiceKeys = Object.keys(voices);
-    const outputFolder = `job_${jobId} `;
+    const outputFolder = `job_${jobId}`;
 
     for (let i = 0; i < voiceKeys.length; i++) {
         const text = voices[voiceKeys[i]];

@@ -211,9 +211,10 @@ export default function Home() {
                   <input
                     type="number"
                     className="input-field"
-                    min={1} max={30}
+                    min={1}
+                    max={60}
                     value={segmentCount}
-                    onChange={e => setSegmentCount(parseInt(e.target.value) || 5)}
+                    onChange={e => setSegmentCount(Math.min(60, Math.max(1, parseInt(e.target.value) || 5)))}
                   />
                 </div>
               </div>
@@ -331,12 +332,25 @@ export default function Home() {
                   ref={logContainerRef}
                 >
                   {selectedJob.logs && selectedJob.logs.length > 0 ? (
-                    selectedJob.logs.map((log, idx) => (
-                      <div key={idx} className="log-item">
-                        <span className="log-timestamp">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
-                        <span className={`log-message log-${log.type}`}>{log.message}</span>
-                      </div>
-                    ))
+                    <>
+                      {selectedJob.logs.map((log, idx) => (
+                        <div key={idx} className="log-item">
+                          <span className="log-timestamp">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                          <span className={`log-message log-${log.type}`}>{log.message}</span>
+                        </div>
+                      ))}
+                      {selectedJob.status === 'error' && selectedJob.error_message && (
+                        <div className="log-item">
+                          <span className="log-timestamp">[{new Date().toLocaleTimeString()}]</span>
+                          <span className="log-message log-error log-error-block">{selectedJob.error_message}</span>
+                        </div>
+                      )}
+                    </>
+                  ) : selectedJob.status === 'error' && selectedJob.error_message ? (
+                    <div className="log-item">
+                      <span className="log-timestamp">[{new Date().toLocaleTimeString()}]</span>
+                      <span className="log-message log-error log-error-block">{selectedJob.error_message}</span>
+                    </div>
                   ) : (
                     <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                       Waiting for log data...
