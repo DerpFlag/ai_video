@@ -34,3 +34,6 @@ yarn-error.log*
 # Temp files
 /tmp
 *.log
+**/.temp
+supabase/.temp
+webapp/supabase/.temp

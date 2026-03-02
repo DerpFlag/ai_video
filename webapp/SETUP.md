@@ -1,5 +1,7 @@
 # AI Video Pipeline — Setup Guide
 
+> **Full project description, APIs, keys, and flow:** see [PROJECT_NOTES.md](../PROJECT_NOTES.md) in the repo root.
+
 ## Prerequisites
 - Node.js 18+
 - Supabase CLI (optional, for deploying edge functions)
@@ -15,15 +17,14 @@
 
 ## Step 2: Configure Environment Variables
 
-Edit `webapp/.env.local` and fill in your actual keys:
+Edit `webapp/.env.local`:
 
 ```env
-NEXT_PUBLIC_SUPABASE_URL=https://acpxzjrjhvvnwnqzgbxk.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<your Supabase anon/public key - find it in Settings > API>
-OPENROUTER_API_KEY=<your OpenRouter API key>
-FISH_AUDIO_API_KEY=<your Fish Audio API key - get one free at fish.audio>
-BYTEZ_API_KEY=9b397141076faeb65abb0717f600537c
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<your Supabase anon key - Settings > API>
 ```
+
+Edge function secrets (set via Supabase CLI, not in .env): `OPENROUTER_API_KEY`, `HF_TOKEN`, `GITHUB_TOKEN`. See PROJECT_NOTES.md.
 
 ## Step 3: Upload Reference Voice
 
@@ -45,8 +46,8 @@ supabase link --project-ref acpxzjrjhvvnwnqzgbxk
 
 # Set secrets for the edge function
 supabase secrets set OPENROUTER_API_KEY=<your-key>
-supabase secrets set FISH_AUDIO_API_KEY=<your-key>
-supabase secrets set BYTEZ_API_KEY=9b397141076faeb65abb0717f600537c
+supabase secrets set HF_TOKEN=<your-huggingface-token>
+supabase secrets set GITHUB_TOKEN=<your-github-token>
 
 # Deploy the edge function
 supabase functions deploy process-pipeline
@@ -71,16 +72,13 @@ Open http://localhost:3000
 ## Architecture
 
 ```
-[You in Browser] → [Vercel Frontend]
-      ↓                    ↓
-      ← polls ←    [Supabase DB] ← updates ←
-                           ↓
-                [Supabase Edge Function]
-                    ↓    ↓    ↓    ↓
-              OpenRouter  Fish  Pollinations  Bytez
-              (LLM)     (TTS)  (Images)     (Video)
-                    ↓    ↓    ↓    ↓
-                [Supabase Storage]
+[Browser] → [Webapp] → [Supabase DB] ← Edge Function (process-pipeline)
+                              ↓              ↓     ↓
+                        OpenRouter    Qwen TTS   HF FLUX
+                        (voice+image   (audio)   (images)
+                         prompts)
+                              ↓              ↓     ↓
+                        [Supabase Storage] ← GitHub Actions (stitcher)
 ```
 
-Everything runs in the cloud. Zero local compute needed.
+See PROJECT_NOTES.md for full flow and API keys.

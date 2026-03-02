@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   
   -- Status tracking
   status TEXT NOT NULL DEFAULT 'pending' 
-    CHECK (status IN ('pending', 'generating_jsons', 'generating_voice', 'generating_images', 'complete', 'error')),
+    CHECK (status IN ('pending', 'generating_jsons', 'generating_voice', 'generating_images', 'stitching', 'complete', 'error')),
   progress INTEGER NOT NULL DEFAULT 0 CHECK (progress >= 0 AND progress <= 100),
   error_message TEXT,
   current_task TEXT,

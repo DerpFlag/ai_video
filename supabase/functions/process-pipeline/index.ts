@@ -168,7 +168,9 @@ async function generateJsons(jobId: string, script: string, segmentCount: number
     await updateJob(jobId, { status: 'generating_jsons', progress: 5 });
 
     const model = 'arcee-ai/trinity-large-preview:free';
+    // Voice prompt: RAW text → N spoken paragraphs as JSON (dynamic by segment_count)
     const voicePrompt = `You are a professional voiceover script editor.
+
 Convert the RAW text into a clear, natural, spoken script formatted as valid JSON only.
 
 Output format:
@@ -180,10 +182,40 @@ Output format:
 }
 
 Rules:
-1) Produce EXACTLY ${segmentCount} segments. 
-   CRITICAL: Each segment MUST be 25-35 words. 
-   (25-35 words is required to achieve a ~10 second duration per segment).
-   Maintain logical and narrative flow.`;
+
+1) Produce EXACTLY ${segmentCount} paragraphs: voice1 → voice${segmentCount}.
+   Each paragraph must be 40–60 words.
+   Maintain logical and narrative flow.
+
+2) Rewrite for speech:
+   - Use conversational language
+   - Prefer short, clear sentences
+   - Improve rhythm and pacing
+   - Use natural transitions
+   - Remove awkward phrasing
+   - Preserve meaning and key facts
+
+3) Optimize for text-to-speech:
+   - Avoid long or nested sentences
+   - Avoid symbols, lists, and formatting
+   - Avoid uncommon abbreviations
+   - Spell out numbers when helpful
+   - Use punctuation to guide pauses
+
+4) Do NOT include:
+   - Inline performance instructions
+   - Stage directions
+   - Bracketed emotion tags
+   - Markup or metadata
+   - Explanations
+   - Markdown
+   - Extra text
+
+5) Output ONLY valid JSON.
+   No comments. No trailing commas. No text outside JSON.
+
+RAW TEXT:
+${script}`;
 
     try {
         const { cleanVoice, cleanImage } = await withRetry(async () => {
@@ -192,7 +224,10 @@ Rules:
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENROUTER_API_KEY}` },
                 body: JSON.stringify({
                     model,
-                    messages: [{ role: 'system', content: 'Output valid JSON only.' }, { role: 'user', content: voicePrompt }],
+                    messages: [
+                        { role: 'system', content: 'You are a professional voiceover script editor.' },
+                        { role: 'user', content: voicePrompt }
+                    ],
                     temperature: 0.7,
                 }),
             });
@@ -200,13 +235,44 @@ Rules:
             const rawVoice = voiceData.choices?.[0]?.message?.content || '{}';
             const cleanVoice = rawVoice.replace(/```json | ```/g, '').trim();
 
-            const imagePrompt = `Generate ${segmentCount} detailed image prompts mirroring the style of the script.Format: { "image1": "prompt1", ... }.Segments: ${cleanVoice} `;
+            // Image prompt: voice JSON → N image prompts (dynamic by segment_count); uses generated voice JSON
+            const imagePrompt = `You are an expert visual designer and prompt engineer.
+
+Your task is: Given a JSON of ${segmentCount} text paragraphs (voice1 → voice${segmentCount}), generate a **new JSON with ${segmentCount} image generation prompts** that correspond to each paragraph. Each prompt should describe a **key visual representative frame** for the paragraph.
+
+Requirements:
+
+1. Output must be **valid JSON only**, keys "image1" to "image${segmentCount}", values are strings. No explanations, markdown, instructions, or extra text.
+2. Each prompt should describe a **single, clear image** representing the paragraph.
+3. Maintain a **consistent visual style** across all prompts:
+   - Color palette (e.g., cinematic, moody, vibrant, pastel)
+   - Character design (age, gender, clothing, expression)
+   - Background style (interior, exterior, lighting, weather)
+4. Include **rich visual details**:
+   - Lighting (soft, harsh, golden hour, neon, shadows)
+   - Composition (foreground, background, perspective)
+   - Objects and environment
+   - Emotions conveyed by scene
+5. The prompt should be concise but descriptive enough to generate a **high-quality, static first frame** for a video.
+6. Do NOT include explanations, instructions, markdown, or extra text.
+
+Example format:
+{
+  "image1": "A young woman standing on a rainy street under neon lights, reflective puddles, cinematic moody palette, detailed skyscraper background, soft rain, contemplative expression, key visual representative frame",
+  "image2": "..."
+}
+
+Input JSON:
+${cleanVoice}`;
             const imageRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENROUTER_API_KEY} ` },
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENROUTER_API_KEY}` },
                 body: JSON.stringify({
                     model,
-                    messages: [{ role: 'system', content: 'Output valid JSON only.' }, { role: 'user', content: imagePrompt }],
+                    messages: [
+                        { role: 'system', content: 'You are a storyboard artist.' },
+                        { role: 'user', content: imagePrompt }
+                    ],
                     temperature: 0.7,
                 }),
             });
@@ -367,14 +433,14 @@ Deno.serve(async (req) => {
         else if (voice_name === 'en-US-AriaNeural') finalSpeaker = "Serena";
         else if (voice_name?.includes('Multilingual')) finalSpeaker = "Sohee";
 
-        const count = parseInt(segment_count) || 5;
+        const segmentCount = Math.min(Math.max(parseInt(String(segment_count), 10) || 5, 1), 60);
 
         const pipeline = async () => {
             try {
-                const { voiceJson, imageJson } = await generateJsons(job_id, script, count);
+                const { voiceJson, imageJson } = await generateJsons(job_id, script, segmentCount);
                 await generateVoice(job_id, voiceJson, finalSpeaker);
                 await generateImages(job_id, imageJson);
-                await triggerStitcher(job_id, count);
+                await triggerStitcher(job_id, segmentCount);
             } catch (err) {
                 await setError(job_id, err instanceof Error ? err.message : String(err));
             }
