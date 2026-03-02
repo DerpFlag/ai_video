@@ -119,40 +119,62 @@ async function qwenSpaceTTS(text: string, speakerId: string): Promise<Uint8Array
         throw new Error(`Synthesis start failed (${endpoint}): ${await startResponse.text()}`);
     }
 
-    const { event_id } = await startResponse.json();
+    const startJson = await startResponse.json();
+    const event_id = startJson?.event_id;
+    if (!event_id) throw new Error(`TTS start response missing event_id: ${JSON.stringify(startJson).slice(0, 200)}`);
 
     // 2. Poll result from SSE stream
     const dataUrl = `${callUrl}/${event_id}`;
     const resultResponse = await fetch(dataUrl);
-    if (!resultResponse.ok) throw new Error("Poll failed");
+    if (!resultResponse.ok) {
+        const errBody = await resultResponse.text();
+        throw new Error(`TTS poll failed (${resultResponse.status}): ${errBody.slice(0, 300)}`);
+    }
 
     const reader = resultResponse.body?.getReader();
-    if (!reader) throw new Error("No reader");
+    if (!reader) throw new Error("TTS stream: no reader");
 
     const decoder = new TextDecoder();
     let audioUrl = "";
+    const streamLines: string[] = [];
+    let lastParsed: unknown = null;
 
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value);
+        const chunk = decoder.decode(value, { stream: true });
         const lines = chunk.split('\n');
         for (const line of lines) {
             if (line.startsWith('data:')) {
-                const content = line.replace('data:', '').trim();
+                const content = line.replace(/^data:\s*/, '').trim();
+                if (!content || content === '[DONE]') continue;
+                streamLines.push(content);
                 try {
                     const parsed = JSON.parse(content);
-                    if (Array.isArray(parsed) && parsed[0] && parsed[0].url) {
-                        audioUrl = parsed[0].url;
-                        break;
+                    lastParsed = parsed;
+                    if (parsed?.error || parsed?.msg) {
+                        const errMsg = typeof parsed.error === 'string' ? parsed.error : parsed.msg || JSON.stringify(parsed).slice(0, 200);
+                        throw new Error(`TTS Space error: ${errMsg}`);
                     }
-                } catch (e) { /* ignore */ }
+                    if (Array.isArray(parsed) && parsed[0]) {
+                        const first = parsed[0];
+                        const u = first?.url ?? first?.path;
+                        if (typeof u === 'string' && (u.startsWith('http://') || u.startsWith('https://')))
+                            audioUrl = u;
+                        if (audioUrl) break;
+                    }
+                } catch (e) {
+                    if (e instanceof Error && e.message.startsWith('TTS Space error:')) throw e;
+                }
             }
         }
         if (audioUrl) break;
     }
 
-    if (!audioUrl) throw new Error(`Audio URL not found in stream for ${endpoint}`);
+    if (!audioUrl) {
+        const tail = streamLines.slice(-3).join(' | ') || (lastParsed ? JSON.stringify(lastParsed).slice(0, 200) : 'no data');
+        throw new Error(`Audio URL not found in stream for ${endpoint}. Stream tail: ${tail}`);
+    }
 
     // 3. Download the audio file
     const audioRes = await fetch(audioUrl);
@@ -298,24 +320,34 @@ ${cleanVoice}`;
     }
 }
 
+// Delay between TTS requests to avoid Space rate limits / overload (especially for voice clone)
+const TTS_DELAY_MS = 2500;
+const TTS_RETRY_DELAY_MS = 8000;
+
 // ── Step 2: Generate Voice ──
 async function generateVoice(jobId: string, voiceJson: string, speaker: string = "Ryan") {
     await updateJob(jobId, { status: 'generating_voice', progress: 35 });
-    await addLog(jobId, `Synthesizing high - quality voice using Qwen-TTS Speaker: ${speaker}...`);
+    await addLog(jobId, `Synthesizing high-quality voice using Qwen-TTS Speaker: ${speaker}...`);
 
     const voices = JSON.parse(voiceJson);
     const voiceKeys = Object.keys(voices);
     const outputFolder = `job_${jobId}`;
 
     for (let i = 0; i < voiceKeys.length; i++) {
+        if (i > 0) await new Promise(r => setTimeout(r, TTS_DELAY_MS));
+
         const text = voices[voiceKeys[i]];
         await addLog(jobId, `Synthesizing voice segment ${i + 1}/${voiceKeys.length}...`);
 
+        let lastErr: Error | null = null;
         try {
             const audioBytes = await withRetry(
                 () => qwenSpaceTTS(text, speaker),
-                5, 5000,
-                (err, count) => addLog(jobId, `Retrying segment ${i + 1} synthesis... (Attempt ${count}/5)`, 'warning')
+                5, TTS_RETRY_DELAY_MS,
+                (err, count) => {
+                    lastErr = err instanceof Error ? err : new Error(String(err));
+                    addLog(jobId, `Retrying segment ${i + 1} (Attempt ${count}/5): ${lastErr.message}`, 'warning');
+                }
             );
 
             await supabase.storage
@@ -327,12 +359,14 @@ async function generateVoice(jobId: string, voiceJson: string, speaker: string =
 
             await addLog(jobId, `Voice segment ${i + 1} finalized and stored.`);
         } catch (err) {
-            await addLog(jobId, `Voice segment ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`, 'warning');
-            await new Promise(r => setTimeout(r, 2000)); // Delay before retry next
+            lastErr = err instanceof Error ? err : new Error(String(err));
+            await addLog(jobId, `Voice segment ${i + 1} failed after retries: ${lastErr.message}`, 'error');
+            await addLog(jobId, `Skipping segment ${i + 1} and continuing with remaining segments.`, 'warning');
+            await new Promise(r => setTimeout(r, TTS_DELAY_MS));
         }
     }
 
-    await addLog(jobId, 'Voice synthesis complete.', 'success');
+    await addLog(jobId, 'Voice synthesis step complete.', 'success');
     await updateJob(jobId, { progress: 40 });
 }
 

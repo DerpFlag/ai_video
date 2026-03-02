@@ -158,6 +158,111 @@ Both N values are the same and come from the user’s **segment count** (clamped
 
 ---
 
+## Voice prompt (full text)
+
+Used to generate the voice JSON from raw script. At runtime `{segmentCount}` is replaced with the user’s segment count (1–60) and `{script}` with the raw script.
+
+**System message:**  
+`You are a professional voiceover script editor. You always output exactly the requested number of segments. Every segment must be 40-60 words; short segments are invalid.`
+
+**User prompt:**
+
+```
+You are a professional voiceover script editor.
+
+TASK: Split the RAW text into EXACTLY {segmentCount} segments. Output valid JSON only with keys voice1 to voice{segmentCount}.
+
+CRITICAL — WORD COUNT: Every segment must be 40–60 words (aim for ~50). Count the words. Segments that are only 1–2 sentences or under ~30 words are WRONG and must be expanded. Each segment should take roughly 20–30 seconds to read aloud.
+
+Output format:
+{
+  "voice1": "first segment text, 40-60 words",
+  "voice2": "second segment text, 40-60 words",
+  ...
+  "voice{segmentCount}": "last segment text, 40-60 words"
+}
+
+Rules:
+
+1) Produce EXACTLY {segmentCount} paragraphs: voice1 → voice{segmentCount}.
+   Each paragraph MUST be 40–60 words. Do not output short 1–2 sentence chunks.
+   Maintain logical and narrative flow across segments.
+
+2) Rewrite for speech:
+   - Use conversational language
+   - Prefer short, clear sentences
+   - Improve rhythm and pacing
+   - Use natural transitions
+   - Remove awkward phrasing
+   - Preserve meaning and key facts
+
+3) Optimize for text-to-speech:
+   - Avoid long or nested sentences
+   - Avoid symbols, lists, and formatting
+   - Avoid uncommon abbreviations
+   - Spell out numbers when helpful
+   - Use punctuation to guide pauses
+
+4) Do NOT include:
+   - Inline performance instructions
+   - Stage directions
+   - Bracketed emotion tags
+   - Markup or metadata
+   - Explanations
+   - Markdown
+   - Extra text
+
+5) Output ONLY valid JSON.
+   No comments. No trailing commas. No text outside JSON.
+
+RAW TEXT:
+{script}
+```
+
+---
+
+## Image prompt (full text)
+
+Used to generate the image JSON from the voice JSON. At runtime `{segmentCount}` is replaced with the same segment count and `{voiceJson}` with the **generated voice JSON** (output of the voice step).
+
+**System message:**  
+`You are a storyboard artist.`
+
+**User prompt:**
+
+```
+You are an expert visual designer and prompt engineer.
+
+Your task is: Given a JSON of {segmentCount} text paragraphs (voice1 → voice{segmentCount}), generate a **new JSON with {segmentCount} image generation prompts** that correspond to each paragraph. Each prompt should describe a **key visual representative frame** for the paragraph.
+
+Requirements:
+
+1. Output must be **valid JSON only**, keys "image1" to "image{segmentCount}", values are strings. No explanations, markdown, instructions, or extra text.
+2. Each prompt should describe a **single, clear image** representing the paragraph.
+3. Maintain a **consistent visual style** across all prompts:
+   - Color palette (e.g., cinematic, moody, vibrant, pastel)
+   - Character design (age, gender, clothing, expression)
+   - Background style (interior, exterior, lighting, weather)
+4. Include **rich visual details**:
+   - Lighting (soft, harsh, golden hour, neon, shadows)
+   - Composition (foreground, background, perspective)
+   - Objects and environment
+   - Emotions conveyed by scene
+5. The prompt should be concise but descriptive enough to generate a **high-quality, static first frame** for a video.
+6. Do NOT include explanations, instructions, markdown, or extra text.
+
+Example format:
+{
+  "image1": "A young woman standing on a rainy street under neon lights, reflective puddles, cinematic moody palette, detailed skyscraper background, soft rain, contemplative expression, key visual representative frame",
+  "image2": "..."
+}
+
+Input JSON:
+{voiceJson}
+```
+
+---
+
 ## Repo Layout (relevant parts)
 
 - **webapp/** — Next.js app: submit form, job list, status polling, logs.
@@ -178,6 +283,11 @@ Both N values are the same and come from the user’s **segment count** (clamped
 - **Stitcher**: If an MP3 fails ffprobe (e.g. truncated/corrupt from TTS), the script no longer crashes. It uses a default duration for that segment and skips that file in the audio concat, so the job can still complete (video with fewer or no audio segments if all fail). Critical failure messages are truncated to one line (~500 chars) in the job log.
 - **Webapp**: When a job is in `error` status, `error_message` is shown in the same "Live Execution Logs" list as a final log line (same styling). Long messages use `.log-error-block` (pre-wrap, word-break) so layout stays consistent.
 - **Edge function**: `outputFolder` for voice uploads is `job_<id>` with no trailing space so stitcher paths match.
+- **TTS (Qwen Space)**:
+  - **Delay between segments**: 2.5s pause before each new segment to reduce Space rate limits / overload (fixes "Audio URL not found" after a few segments).
+  - **Retries**: 5 attempts, 8s between attempts; each retry logs the **actual error** (e.g. "Retrying segment 3 (Attempt 2/5): Audio URL not found in stream... Stream tail: ...").
+  - **Stream errors**: If the Space returns an error in the SSE stream (`error` or `msg`), we throw with that message. If no URL is found, we throw with the last few stream lines so you can see what the Space returned.
+  - **Failed segments**: If a segment still fails after all retries, we log "Voice segment X failed after retries: <full error>" (as error), then "Skipping segment X and continuing with remaining segments." and continue. Pipeline does not stop; stitcher will use whatever audio was produced.
 
 ---
 
