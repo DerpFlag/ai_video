@@ -57,6 +57,16 @@ function downloadFile(url, destPath) {
     });
 }
 
+/** Download from Supabase Storage using service key (works even when bucket is not public). */
+async function downloadFromStorage(relativePath, destPath) {
+    const { data, error } = await supabase.storage.from('pipeline_output').download(relativePath);
+    if (error) throw new Error(`Storage download failed: ${error.message} (${relativePath})`);
+    if (!data) throw new Error(`No data for ${relativePath}`);
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(await data.arrayBuffer());
+    if (buf.length === 0) throw new Error(`Downloaded file is empty: ${relativePath}`);
+    fs.writeFileSync(destPath, buf);
+}
+
 function getDuration(filePath) {
     return new Promise((resolve, reject) => {
         ffmpeg.ffprobe(filePath, (err, metadata) => {
@@ -115,13 +125,13 @@ async function main() {
             const imagePath = path.resolve(workDir, `image_${i}.jpg`);
             const audioPath = path.resolve(workDir, `voice_${i}.mp3`);
 
-            const imageUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/images/image_${i}.jpg`;
-            const audioUrl = `${SUPABASE_URL}/storage/v1/object/public/pipeline_output/${outputFolder}/audio/voice_${i}.mp3`;
+            const imageStoragePath = `${outputFolder}/images/image_${i}.jpg`;
+            const audioStoragePath = `${outputFolder}/audio/voice_${i}.mp3`;
 
-            // 1. Download audio and get duration (skip corrupt/invalid MP3s for concat, use default duration)
+            // 1. Download audio via Storage API (works even if bucket is not public) and get duration
             let duration = 6;
             try {
-                await downloadFile(audioUrl, audioPath);
+                await downloadFromStorage(audioStoragePath, audioPath);
                 if (fs.existsSync(audioPath) && fs.statSync(audioPath).size > 0) {
                     try {
                         duration = await getDuration(audioPath);
@@ -138,7 +148,7 @@ async function main() {
             // 2. Generate Ken Burns video
             try {
                 await addLog(JOB_ID, `Processing segment ${i}: Downloading assets...`);
-                await downloadFile(imageUrl, imagePath);
+                await downloadFromStorage(imageStoragePath, imagePath);
 
                 const motions = ['zoom_in', 'zoom_out', 'pan_right', 'pan_left'];
                 const style = motions[(i - 1) % motions.length];
@@ -155,9 +165,10 @@ async function main() {
                 } else if (style === 'zoom_out') {
                     filter += `zoompan=z='if(lte(zoom,1.0),1.5,zoom-0.0015)':d=${totalFrames}:s=1920x1080:fps=30:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
                 } else if (style === 'pan_right') {
-                    filter += `zoompan=z=${z}:d=${totalFrames}:s=1920x1080:fps=30:x='(iw-iw/${z})*n/${totalFrames}':y='(ih-ih/${z})/2'`;
+                    // Use zoompan vars: on=output frame count, duration=output frames for current input (d)
+                    filter += `zoompan=z=${z}:d=${totalFrames}:s=1920x1080:fps=30:x='(iw-iw/${z})*on/duration':y='(ih-ih/${z})/2'`;
                 } else {
-                    filter += `zoompan=z=${z}:d=${totalFrames}:s=1920x1080:fps=30:x='(iw-iw/${z})*(1-n/${totalFrames})':y='(ih-ih/${z})/2'`;
+                    filter += `zoompan=z=${z}:d=${totalFrames}:s=1920x1080:fps=30:x='(iw-iw/${z})*(1-on/duration)':y='(ih-ih/${z})/2'`;
                 }
 
                 await addLog(JOB_ID, `Encoding segment ${i} (${duration.toFixed(1)}s) with ${style}...`);
