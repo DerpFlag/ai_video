@@ -136,32 +136,52 @@ async function qwenSpaceTTS(text: string, speakerId: string): Promise<Uint8Array
 
     const decoder = new TextDecoder();
     let audioUrl = "";
-    const streamLines: string[] = [];
-    let lastParsed: unknown = null;
+    let rawStreamText = "";
+    let lastEventType = "";
+    let onlyNullSeen = true;
+
+    function extractUrl(obj: unknown): string | null {
+        if (!obj || typeof obj !== 'object') return null;
+        const arr = Array.isArray(obj) ? obj : (obj as Record<string, unknown>).data ?? (obj as Record<string, unknown>).output;
+        if (!Array.isArray(arr) || !arr[0]) return null;
+        const first = arr[0] as Record<string, unknown>;
+        const u = first?.url ?? first?.path;
+        if (typeof u === 'string' && (u.startsWith('http://') || u.startsWith('https://'))) return u;
+        return null;
+    }
 
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
+        rawStreamText += chunk;
         const lines = chunk.split('\n');
         for (const line of lines) {
+            if (line.startsWith('event:')) {
+                lastEventType = line.replace(/^event:\s*/, '').trim();
+                continue;
+            }
             if (line.startsWith('data:')) {
                 const content = line.replace(/^data:\s*/, '').trim();
                 if (!content || content === '[DONE]') continue;
-                streamLines.push(content);
+                if (content === 'null') {
+                    continue;
+                }
                 try {
                     const parsed = JSON.parse(content);
-                    lastParsed = parsed;
-                    if (parsed?.error || parsed?.msg) {
-                        const errMsg = typeof parsed.error === 'string' ? parsed.error : parsed.msg || JSON.stringify(parsed).slice(0, 200);
+                    onlyNullSeen = false;
+                    if (lastEventType === 'error' && parsed && typeof parsed === 'object') {
+                        const errMsg = typeof parsed.message === 'string' ? parsed.message : (parsed.error ?? parsed.msg ?? JSON.stringify(parsed).slice(0, 200));
                         throw new Error(`TTS Space error: ${errMsg}`);
                     }
-                    if (Array.isArray(parsed) && parsed[0]) {
-                        const first = parsed[0];
-                        const u = first?.url ?? first?.path;
-                        if (typeof u === 'string' && (u.startsWith('http://') || u.startsWith('https://')))
-                            audioUrl = u;
-                        if (audioUrl) break;
+                    if (parsed && typeof parsed === 'object' && (parsed.error || parsed.msg)) {
+                        const errMsg = typeof parsed.error === 'string' ? parsed.error : String(parsed.msg ?? JSON.stringify(parsed).slice(0, 200));
+                        throw new Error(`TTS Space error: ${errMsg}`);
+                    }
+                    const u = extractUrl(parsed);
+                    if (u) {
+                        audioUrl = u;
+                        break;
                     }
                 } catch (e) {
                     if (e instanceof Error && e.message.startsWith('TTS Space error:')) throw e;
@@ -172,8 +192,11 @@ async function qwenSpaceTTS(text: string, speakerId: string): Promise<Uint8Array
     }
 
     if (!audioUrl) {
-        const tail = streamLines.slice(-3).join(' | ') || (lastParsed ? JSON.stringify(lastParsed).slice(0, 200) : 'no data');
-        throw new Error(`Audio URL not found in stream for ${endpoint}. Stream tail: ${tail}`);
+        const rawTail = rawStreamText.slice(-900).replace(/\n/g, " ");
+        if (onlyNullSeen || rawStreamText.includes('"null"') || rawStreamText.trim().endsWith('null')) {
+            throw new Error(`TTS Space returned no audio (stream had only null or empty data). The Space may be overloaded—wait longer between segments or retry. Raw tail: ${rawTail}`);
+        }
+        throw new Error(`Audio URL not found for ${endpoint}. Last event: ${lastEventType || 'none'}. Raw tail: ${rawTail}`);
     }
 
     // 3. Download the audio file
@@ -320,9 +343,9 @@ ${cleanVoice}`;
     }
 }
 
-// Delay between TTS requests to avoid Space rate limits / overload (especially for voice clone)
-const TTS_DELAY_MS = 2500;
-const TTS_RETRY_DELAY_MS = 8000;
+// Delay between TTS requests to avoid Space rate limits / overload (voice clone often fails after 2–3 segments without this)
+const TTS_DELAY_MS = 5000;
+const TTS_RETRY_DELAY_MS = 10000;
 
 // ── Step 2: Generate Voice ──
 async function generateVoice(jobId: string, voiceJson: string, speaker: string = "Ryan") {
@@ -332,9 +355,11 @@ async function generateVoice(jobId: string, voiceJson: string, speaker: string =
     const voices = JSON.parse(voiceJson);
     const voiceKeys = Object.keys(voices);
     const outputFolder = `job_${jobId}`;
+    const isVoiceClone = speaker.startsWith('ref:');
+    const segmentDelayMs = isVoiceClone ? 6000 : TTS_DELAY_MS;
 
     for (let i = 0; i < voiceKeys.length; i++) {
-        if (i > 0) await new Promise(r => setTimeout(r, TTS_DELAY_MS));
+        if (i > 0) await new Promise(r => setTimeout(r, segmentDelayMs));
 
         const text = voices[voiceKeys[i]];
         await addLog(jobId, `Synthesizing voice segment ${i + 1}/${voiceKeys.length}...`);
