@@ -106,14 +106,18 @@ The user picks **segment count** (e.g. 5 or 30). Prompts (voice and image) are *
 - **Key**: `OPENROUTER_API_KEY` — set as **Supabase Edge Function secret** (not in webapp).
 - **Account**: https://openrouter.ai (API keys).
 
-### 3. Hugging Face
+### 3. TTS — Microsoft Edge TTS
 
-- **Qwen TTS**: Hosted Space `qwen-qwen3-tts.hf.space` (Gradio API). No key required for the Space itself; optional for gated models.
-- **FLUX.1-schnell**: Image generation via `router.huggingface.co` (or HF Inference API).
-- **Key**: `HF_TOKEN` — set as **Supabase Edge Function secret** (used for image generation).
+- **Edge TTS**: Used via `edge-tts-universal` (npm). No API key; uses Microsoft’s Edge Read Aloud–style service. Stable, no rate-limit workarounds. **Voice clone is not supported** (built-in voices only).
+- **Reverting to Qwen TTS**: Full Qwen (Hugging Face Space) code and revert steps are in **`docs/backups/`**: `tts-qwen-backup.md` (instructions) and `tts-qwen-backup.ts` (code to restore).
+
+### 4. Hugging Face
+
+- **FLUX.1-schnell**: Image generation via `router.huggingface.co` (or HF Inference API). TTS is no longer from HF.
+- **Key**: `HF_TOKEN` — set as **Supabase Edge Function secret** (used for **image generation** only).
 - **Account**: https://huggingface.co (Settings → Access Tokens).
 
-### 4. GitHub
+### 5. GitHub
 
 - **Usage**: Repository dispatch to run the stitcher workflow (`.github/workflows/stitcher.yml`); workflow runs `stitcher/script.js`.
 - **Secrets** (repo): `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, and optionally `MINIMAX_API_KEY` / `MINIMAX_TASKS_JSON` if you add Minimax later.
@@ -283,13 +287,7 @@ Input JSON:
 - **Stitcher**: If an MP3 fails ffprobe (e.g. truncated/corrupt from TTS), the script no longer crashes. It uses a default duration for that segment and skips that file in the audio concat, so the job can still complete (video with fewer or no audio segments if all fail). Critical failure messages are truncated to one line (~500 chars) in the job log.
 - **Webapp**: When a job is in `error` status, `error_message` is shown in the same "Live Execution Logs" list as a final log line (same styling). Long messages use `.log-error-block` (pre-wrap, word-break) so layout stays consistent.
 - **Edge function**: `outputFolder` for voice uploads is `job_<id>` with no trailing space so stitcher paths match.
-- **TTS (Qwen Space)**:
-  - **Delay between segments**: 2.5s pause before each new segment to reduce Space rate limits / overload (fixes "Audio URL not found" after a few segments).
-  - **Retries**: 5 attempts, 8s between attempts; each retry logs the **actual error** (e.g. "Retrying segment 3 (Attempt 2/5): Audio URL not found in stream... Stream tail: ...").
-  - **Stream errors**: If the Space returns an error in the SSE stream (`error` or `msg`), we throw with that message. If no URL is found, we throw with the last few stream lines so you can see what the Space returned.
-  - **Failed segments**: If a segment still fails after all retries, we log "Voice segment X failed after retries: <full error>" (as error), then "Skipping segment X and continuing with remaining segments." and continue. Pipeline does not stop; stitcher will use whatever audio was produced.
-  - **Voice clones & `voice_clones` table**: When you use a ref voice (e.g. `ref:denis.wav`), we **do** use the **voice_clones** table. We look up the row by `file_name` (e.g. `denis.wav`) and read **transcript**. If **transcript** is set, we send it to the Qwen Space as **ref_text** and set **use_xvector_only = false**, so the model uses both the reference audio and the known spoken text for better cloning. If transcript is missing/empty, we use **use_xvector_only = true** (voice embedding only). So adding a transcript in `voice_clones` for your reference file improves clone quality when available.
-  - **Why the 3rd voice segment fails (`event: error data: null`)**: The Qwen TTS Space (voice clone) often **errors on the 3rd request** in a row—it returns `event: error data: null` (rate limit or internal overload). So segment 1 and 2 succeed, segment 3 fails. Fixes: (1) **22s cooldown** before segment 3, 5, 7, … when using voice clone, so the Space has time to reset. (2) **7s** between every voice-clone segment. (3) On **`event: error` + `data: null`** we throw immediately with a clear message and **retry only 3 times** (8s apart) so we don’t burn time and hit the Edge Function timeout; then we **skip** that segment and **continue** to the next (we log "Skipping segment X; continuing with segment X+1" and bump progress so the UI doesn’t look stuck). (4) Pipeline never stops by design—if segment 3 fails after retries, we do segment 4 and 5. If the task stays on "generating_voice" with no new logs, the Edge Function likely **timed out** (e.g. too many retries before the fix). **Test script**: `node scripts/test-qwen-tts-stream.mjs 3`.
+- **TTS (Edge TTS)**: We use **Microsoft Edge TTS** via `edge-tts-universal`. No API key, no cooldowns, no voice clone. Short delay (800ms) between segments; 3 retries (3s apart) on failure. If a segment fails after retries, we skip it and continue. **Qwen TTS backup**: See `docs/backups/tts-qwen-backup.md` and `tts-qwen-backup.ts` to restore Qwen (voice clone, Space-based).
 
 ---
 

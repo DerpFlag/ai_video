@@ -12,16 +12,16 @@ const PIPELINE_STEPS = [
   { key: 'complete', label: 'Success', icon: '✅' },
 ];
 
-const QWEN_VOICES = [
-  { value: 'Ryan', label: 'Ryan (Default - US Male)' },
-  { value: 'Serena', label: 'Serena (US Female)' },
-  { value: 'Sohee', label: 'Sohee (Multilingual)' },
-  { value: 'Aiden', label: 'Aiden' },
-  { value: 'Dylan', label: 'Dylan' },
-  { value: 'Eric', label: 'Eric' },
-  { value: 'Ono_anna', label: 'Ono Anna' },
-  { value: 'Uncle_fu', label: 'Uncle Fu' },
-  { value: 'Vivian', label: 'Vivian' },
+// Edge TTS voices (Microsoft; no API key). Value = voice ShortName sent to pipeline.
+const EDGE_TTS_VOICES = [
+  { value: 'en-US-GuyNeural', label: 'Guy (US Male)' },
+  { value: 'en-US-AriaNeural', label: 'Aria (US Female)' },
+  { value: 'en-US-JennyNeural', label: 'Jenny (US Female)' },
+  { value: 'en-US-DavisNeural', label: 'Davis (US Male)' },
+  { value: 'en-GB-SoniaNeural', label: 'Sonia (UK Female)' },
+  { value: 'en-GB-RyanNeural', label: 'Ryan (UK Male)' },
+  { value: 'en-US-AndrewMultilingualNeural', label: 'Andrew (Multilingual)' },
+  { value: 'en-US-EmmaMultilingualNeural', label: 'Emma (Multilingual)' },
 ];
 
 function getStepState(jobStatus: string, stepKey: string) {
@@ -63,34 +63,8 @@ export default function Home() {
 
   // Form state
   const [script, setScript] = useState('');
-  const [voiceName, setVoiceName] = useState(QWEN_VOICES[0].value);
+  const [voiceName, setVoiceName] = useState(EDGE_TTS_VOICES[0].value);
   const [segmentCount, setSegmentCount] = useState(5);
-  const [customVoices, setCustomVoices] = useState<{ value: string, label: string }[]>([]);
-
-  // Fetch reference voices from storage + DB metadata
-  useEffect(() => {
-    const fetchReferenceVoices = async () => {
-      // 1. Fetch files from storage
-      const { data: storageFiles, error: storageError } = await supabase.storage.from('reference_voices').list();
-
-      // 2. Fetch metadata from voice_clones table
-      const { data: dbClones } = await supabase.from('voice_clones').select('*');
-
-      if (!storageError && storageFiles) {
-        const voices = storageFiles
-          .filter(f => f.name.endsWith('.wav') || f.name.endsWith('.mp3'))
-          .map(f => {
-            const dbMatch = dbClones?.find(c => c.file_name === f.name);
-            return {
-              value: `ref:${f.name}`,
-              label: dbMatch?.display_name ? `Clone: ${dbMatch.display_name}` : `Clone: ${f.name.split('.')[0]}`
-            };
-          });
-        setCustomVoices(voices);
-      }
-    };
-    fetchReferenceVoices();
-  }, []);
 
   // Fetch jobs
   const fetchJobs = useCallback(async () => {
@@ -192,18 +166,9 @@ export default function Home() {
                     value={voiceName}
                     onChange={e => setVoiceName(e.target.value)}
                   >
-                    <optgroup label="Default Qwen Voices">
-                      {QWEN_VOICES.map(v => (
-                        <option key={v.value} value={v.value}>{v.label}</option>
-                      ))}
-                    </optgroup>
-                    {customVoices.length > 0 && (
-                      <optgroup label="Cloned Reference Voices">
-                        {customVoices.map(v => (
-                          <option key={v.value} value={v.value}>{v.label}</option>
-                        ))}
-                      </optgroup>
-                    )}
+                    {EDGE_TTS_VOICES.map(v => (
+                      <option key={v.value} value={v.value}>{v.label}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
